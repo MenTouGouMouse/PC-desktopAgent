@@ -11,10 +11,34 @@ Validates: Requirements 1.1, 12.1, 12.4
 """
 from __future__ import annotations
 
+import ctypes
 import logging
 import multiprocessing
 import sys
 from multiprocessing import Process, Queue
+
+
+def _set_dpi_awareness() -> None:
+    """设置进程为 Per-Monitor DPI Aware v2，统一物理像素坐标系。
+
+    必须在创建任何窗口或调用 Win32 坐标 API 之前调用。
+    设置后 mss 截图坐标、SetCursorPos、GetCursorPos 均使用物理像素，消除坐标系矛盾。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        # Per-Monitor Aware v2 (Windows 10 1703+)
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # type: ignore[attr-defined]
+    except Exception:
+        try:
+            # 回退: System Aware
+            ctypes.windll.user32.SetProcessDPIAware()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
+# 必须在模块导入阶段尽早调用，早于任何可能创建窗口的 import
+_set_dpi_awareness()
 
 from config.config_loader import ConfigMissingError, load_config
 from gui.app import PyWebViewApp

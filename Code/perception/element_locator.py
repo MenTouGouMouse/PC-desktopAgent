@@ -260,8 +260,8 @@ class ElementLocator:
             def _build_result(cx_phys: int, cy_phys: int, confidence: float) -> ElementResult:
                 """将物理坐标中心点还原 scale_ratio 后构造 ElementResult。
 
-                本进程为 DPI-unaware：mss 物理坐标 == pyautogui 逻辑坐标（同为 2560×1600），
-                不需要 to_logical 转换，直接使用还原 scale_ratio 后的原始图像坐标。
+                本进程为 Per-Monitor DPI Aware，mss 物理坐标 == SetCursorPos 物理坐标，
+                坐标系一致，不需要额外转换，仅需还原 scale_ratio 到原始图像坐标。
                 """
                 cx_orig = int(cx_phys / scale_ratio)
                 cy_orig = int(cy_phys / scale_ratio)

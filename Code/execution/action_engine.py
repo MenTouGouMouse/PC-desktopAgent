@@ -5,8 +5,9 @@
 中文文本输入通过 pyperclip 剪贴板粘贴方式实现，避免输入法兼容性问题。
 系统级操作（UAC 弹窗）使用 pywinauto Application(backend="uia") 模式。
 
-坐标约定：本进程为 DPI-unaware，pyautogui 直接接受逻辑坐标（与 mss 截图坐标系一致），
-Windows 内部负责映射到物理像素，无需手动调用 DPIAdapter.to_physical。
+坐标约定：本进程在 main_gui.py 启动时已设置为 Per-Monitor DPI Aware v2，
+所有 Win32 坐标 API（SetCursorPos / GetCursorPos / GetSystemMetrics）均使用物理像素坐标，
+与 mss 截图坐标系一致，无需手动调用 DPIAdapter 进行转换。
 """
 from __future__ import annotations
 
@@ -138,14 +139,14 @@ def human_like_move(target_x: int, target_y: int) -> None:
     """从当前鼠标位置沿贝塞尔曲线拟人化移动到目标坐标。
 
     坐标系说明：
-    - DPI awareness=1（System Aware），SetCursorPos/GetCursorPos 使用物理坐标
-    - pyautogui.position() 在 System Aware 下也返回物理坐标
-    - mss 截图是物理坐标，所以 target_x/target_y 是物理坐标
+    - 本进程已设置 Per-Monitor DPI Aware v2
+    - SetCursorPos / GetCursorPos 使用物理像素坐标
+    - mss 截图也是物理像素坐标
     - 两者坐标系一致，直接使用即可
 
     Args:
-        target_x: 目标 X 坐标（物理坐标，与 mss 截图一致）。
-        target_y: 目标 Y 坐标（物理坐标）。
+        target_x: 目标 X 坐标（物理像素坐标，与 mss 截图一致）。
+        target_y: 目标 Y 坐标（物理像素坐标）。
     """
     user32 = ctypes.windll.user32  # type: ignore[attr-defined]
 
@@ -223,8 +224,8 @@ def _ctypes_click(x: int, y: int, right: bool = False) -> None:
     适用于 pyautogui 被系统拦截或静默失败的场景（如管理员权限窗口）。
 
     Args:
-        x: 目标 X 坐标（逻辑坐标）。
-        y: 目标 Y 坐标（逻辑坐标）。
+        x: 目标 X 坐标（物理像素坐标）。
+        y: 目标 Y 坐标（物理像素坐标）。
         right: True 为右键点击，False 为左键点击。
     """
     try:

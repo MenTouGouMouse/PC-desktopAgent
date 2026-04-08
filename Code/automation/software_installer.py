@@ -6,9 +6,12 @@ automation.software_installer — 真实智能安装执行器。
 """
 from __future__ import annotations
 
+import ctypes
+import ctypes.wintypes
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -54,6 +57,99 @@ def translate_shell_error(code: int) -> str:
         对应的中文错误说明；未知错误码时返回 ``f"未知错误（代码 {code}）"``。
     """
     return _SHELL_ERROR_MAP.get(code, f"未知错误（代码 {code}）")
+
+
+# ---------------------------------------------------------------------------
+# UAC 提权检测 (P2)
+# ---------------------------------------------------------------------------
+
+def _is_elevated() -> bool:
+    """检查当前进程是否以管理员权限运行。"""
+    if sys.platform != "win32":
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# ---------------------------------------------------------------------------
+# 安装窗口查找 helper (P3/P4 共用，纯 ctypes，不依赖 pygetwindow)
+# ---------------------------------------------------------------------------
+
+# 常见安装程序窗口标题关键词
+_INSTALLER_KEYWORDS: list[str] = ["安装", "Setup", "Install", "Wizard", "向导"]
+
+
+def _find_installer_hwnd(window_hint: str = "") -> int | None:
+    """用 EnumWindows 查找安装窗口句柄，匹配标题关键词。
+
+    遍历所有可见顶层窗口，依次用 window_hint 和通用关键词匹配窗口标题。
+
+    Args:
+        window_hint: 优先匹配的关键词（通常为安装包文件名去掉扩展名）。
+
+    Returns:
+        匹配的窗口句柄 (hwnd)；未找到时返回 None。
+    """
+    if sys.platform != "win32":
+        return None
+
+    keywords = [window_hint] + _INSTALLER_KEYWORDS if window_hint else list(_INSTALLER_KEYWORDS)
+    keywords = [kw for kw in keywords if kw]
+    found_hwnd: list[int] = []
+
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+
+    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    def _callback(hwnd: int, _lparam: int) -> bool:
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        buf = ctypes.create_unicode_buffer(512)
+        user32.GetWindowTextW(hwnd, buf, 512)
+        title = buf.value
+        if not title:
+            return True
+        for kw in keywords:
+            if kw.lower() in title.lower():
+                found_hwnd.append(hwnd)
+                return False  # 停止枚举
+        return True
+
+    cb = WNDENUMPROC(_callback)
+    user32.EnumWindows(cb, 0)
+
+    if found_hwnd:
+        logger.info("_find_installer_hwnd: 找到窗口 hwnd=%d", found_hwnd[0])
+        return found_hwnd[0]
+
+    logger.debug("_find_installer_hwnd: 未找到匹配窗口 (keywords=%s)", keywords)
+    return None
+
+
+def _get_window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
+    """获取窗口的屏幕矩形区域。
+
+    Args:
+        hwnd: 窗口句柄。
+
+    Returns:
+        (left, top, width, height) 物理像素坐标元组；失败返回 None。
+    """
+    try:
+        rect = ctypes.wintypes.RECT()
+        ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))  # type: ignore[attr-defined]
+        left = rect.left
+        top = rect.top
+        width = rect.right - rect.left
+        height = rect.bottom - rect.top
+        if width <= 0 or height <= 0:
+            return None
+        return (left, top, width, height)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("_get_window_rect: 获取窗口矩形失败 hwnd=%d: %s", hwnd, exc)
+        return None
 
 
 @dataclass
@@ -247,8 +343,8 @@ def run_software_installer(
                             )])
                         cx = result.bbox[0] + result.bbox[2] // 2
                         cy = result.bbox[1] + result.bbox[3] // 2
-                        # result.bbox 已是逻辑坐标（所有策略统一在 ElementLocator 内转换）
-                        # ActionEngine.click() 内部会调用 to_physical，无需再转换
+                        # result.bbox 已是物理像素坐标（所有策略统一在 ElementLocator 内转换）
+                        # 进程已设为 DPI Aware，所有坐标统一为物理像素，无需转换
                         action_engine.click(cx, cy)
                         logger.info(
                             "点击按钮成功：%s（候选文字=%r），坐标=(%d, %d)",
