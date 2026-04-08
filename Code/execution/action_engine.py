@@ -5,9 +5,11 @@
 中文文本输入通过 pyperclip 剪贴板粘贴方式实现，避免输入法兼容性问题。
 系统级操作（UAC 弹窗）使用 pywinauto Application(backend="uia") 模式。
 
-坐标约定：本进程在 main_gui.py 启动时已设置为 Per-Monitor DPI Aware v2，
-所有 Win32 坐标 API（SetCursorPos / GetCursorPos / GetSystemMetrics）均使用物理像素坐标，
-与 mss 截图坐标系一致，无需手动调用 DPIAdapter 进行转换。
+坐标约定（已通过诊断脚本验证）：
+- 本进程 DPI awareness = 0（UNAWARE）
+- pyautogui.size() / GetCursorPos / SetCursorPos 均使用物理坐标（如 2560×1600）
+- mss 截图也是物理坐标，与上述 API 坐标系完全一致
+- 无需任何 DPI 转换，直接使用截图坐标即可
 """
 from __future__ import annotations
 
@@ -138,11 +140,10 @@ def _ease_out(t: float) -> float:
 def human_like_move(target_x: int, target_y: int) -> None:
     """从当前鼠标位置沿贝塞尔曲线拟人化移动到目标坐标。
 
-    坐标系说明：
-    - 本进程已设置 Per-Monitor DPI Aware v2
+    坐标系说明（已验证 DPI awareness=0 UNAWARE）：
     - SetCursorPos / GetCursorPos 使用物理像素坐标
-    - mss 截图也是物理像素坐标
-    - 两者坐标系一致，直接使用即可
+    - mss 截图也是物理像素坐标，两者完全一致
+    - 无需任何 DPI 转换
 
     Args:
         target_x: 目标 X 坐标（物理像素坐标，与 mss 截图一致）。

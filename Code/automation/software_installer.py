@@ -193,37 +193,88 @@ INSTALL_STEPS: list[InstallStep] = [
 ]
 
 
-def _activate_installer_window(window_hint: str = "") -> None:
-    """尝试将安装程序窗口激活到前台。
+def _activate_installer_window(window_hint: str = "") -> tuple[int, int, int, int] | None:
+    """尝试将安装程序窗口激活到前台，并返回窗口区域。
 
-    使用 pygetwindow 查找包含 window_hint 的窗口并激活；
-    若找不到则静默跳过（不影响主流程）。
+    使用 ctypes FindWindow + SetForegroundWindow（比 pygetwindow 更可靠），
+    同时返回窗口的 (left, top, width, height) 供截图裁剪使用。
+    若找不到则静默跳过，返回 None。
 
     Args:
         window_hint: 窗口标题关键词（通常是安装包文件名去掉扩展名）。
-    """
-    try:
-        import pygetwindow as gw  # type: ignore[import-untyped]
 
-        # 常见安装程序窗口标题关键词
-        keywords = [window_hint, "安装", "Setup", "Install", "Wizard", "向导"]
-        for kw in keywords:
-            if not kw:
-                continue
-            wins = gw.getWindowsWithTitle(kw)
-            if wins:
-                win = wins[0]
-                try:
+    Returns:
+        窗口区域 (left, top, width, height) 或 None（未找到时）。
+    """
+    import ctypes as _ctypes
+
+    user32 = _ctypes.windll.user32  # type: ignore[attr-defined]
+
+    class RECT(_ctypes.Structure):
+        _fields_ = [("left", _ctypes.c_long), ("top", _ctypes.c_long),
+                    ("right", _ctypes.c_long), ("bottom", _ctypes.c_long)]
+
+    # 常见安装程序窗口标题关键词
+    keywords = [window_hint, "安装", "Setup", "Install", "Wizard", "向导", "安装程序"]
+    keywords = [k for k in keywords if k]
+
+    # 枚举所有顶层窗口，找到标题包含关键词的
+    found_hwnd = None
+    found_title = ""
+
+    EnumWindowsProc = _ctypes.WINFUNCTYPE(_ctypes.c_bool, _ctypes.c_ulong, _ctypes.c_long)
+    hwnds: list[int] = []
+
+    def _enum_cb(hwnd: int, _: int) -> bool:
+        if user32.IsWindowVisible(hwnd):
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                buf = _ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buf, length + 1)
+                title = buf.value
+                for kw in keywords:
+                    if kw.lower() in title.lower():
+                        hwnds.append(hwnd)
+                        return True
+        return True
+
+    user32.EnumWindows(EnumWindowsProc(_enum_cb), 0)
+
+    if not hwnds:
+        # 降级：pygetwindow
+        try:
+            import pygetwindow as gw  # type: ignore[import-untyped]
+            for kw in keywords:
+                wins = gw.getWindowsWithTitle(kw)
+                if wins:
+                    win = wins[0]
                     win.activate()
-                    time.sleep(0.3)
-                    logger.debug("_activate_installer_window: 已激活窗口 %r", win.title)
-                    return
-                except Exception:  # noqa: BLE001
-                    pass
-    except ImportError:
-        pass  # pygetwindow 未安装时静默跳过
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("_activate_installer_window: 激活失败（静默跳过）: %s", exc)
+                    time.sleep(0.2)
+                    logger.debug("_activate_installer_window: pygetwindow 激活 %r", win.title)
+                    return (win.left, win.top, win.width, win.height)
+        except Exception:  # noqa: BLE001
+            pass
+        logger.debug("_activate_installer_window: 未找到安装窗口")
+        return None
+
+    hwnd = hwnds[0]
+    # 激活窗口
+    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    user32.SetForegroundWindow(hwnd)
+    time.sleep(0.2)
+
+    # 获取窗口区域
+    rect = RECT()
+    user32.GetWindowRect(hwnd, _ctypes.byref(rect))
+    w = rect.right - rect.left
+    h = rect.bottom - rect.top
+    if w > 0 and h > 0:
+        buf = _ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(hwnd, buf, 256)
+        logger.debug("_activate_installer_window: 已激活 %r 区域=(%d,%d,%d,%d)",
+                     buf.value, rect.left, rect.top, w, h)
+        return (rect.left, rect.top, w, h)
+    return None
 
 
 def _launch_package(pkg: Path) -> None:
@@ -331,9 +382,22 @@ def run_software_installer(
 
                 for candidate in candidates:
                     try:
-                        # 点击前激活安装窗口，确保它在前台
-                        _activate_installer_window(pkg.stem)
-                        screenshot = screen_capturer.capture_full()
+                        # 激活安装窗口并获取窗口区域（用于裁剪截图，减少干扰）
+                        win_rect = _activate_installer_window(pkg.stem)
+
+                        # 优先截取安装窗口区域，减少背景干扰，提升 Qwen-VL 识别准确率
+                        if win_rect is not None:
+                            wx, wy, ww, wh = win_rect
+                            try:
+                                screenshot = screen_capturer.capture_region(wx, wy, ww, wh)
+                                coord_offset = (wx, wy)
+                            except Exception:
+                                screenshot = screen_capturer.capture_full()
+                                coord_offset = (0, 0)
+                        else:
+                            screenshot = screen_capturer.capture_full()
+                            coord_offset = (0, 0)
+
                         result = element_locator.locate_by_text(screenshot, candidate)
                         if detection_cache is not None:
                             detection_cache.update([BoundingBoxDict(
@@ -341,10 +405,9 @@ def run_software_installer(
                                 label=candidate,
                                 confidence=result.confidence,
                             )])
-                        cx = result.bbox[0] + result.bbox[2] // 2
-                        cy = result.bbox[1] + result.bbox[3] // 2
-                        # result.bbox 已是物理像素坐标（所有策略统一在 ElementLocator 内转换）
-                        # 进程已设为 DPI Aware，所有坐标统一为物理像素，无需转换
+                        # bbox 中心点 + 窗口偏移 = 屏幕绝对坐标
+                        cx = result.bbox[0] + result.bbox[2] // 2 + coord_offset[0]
+                        cy = result.bbox[1] + result.bbox[3] // 2 + coord_offset[1]
                         action_engine.click(cx, cy)
                         logger.info(
                             "点击按钮成功：%s（候选文字=%r），坐标=(%d, %d)",
@@ -353,7 +416,7 @@ def run_software_installer(
                         found = True
                         break
                     except Exception as exc:
-                        logger.debug("候选文字 %r 定位失败：%s", candidate, exc)
+                        logger.warning("候选文字 %r 定位失败：%s", candidate, exc)
 
                 if found:
                     break

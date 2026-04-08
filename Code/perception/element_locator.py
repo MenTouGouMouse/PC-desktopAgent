@@ -235,7 +235,8 @@ class ElementLocator:
 
             b64_image: str = base64.b64encode(buf.tobytes()).decode("utf-8")
 
-            raw_result = self._call_qwen_vl_api(b64_image, element_description)
+            raw_result = self._call_qwen_vl_api(b64_image, element_description,
+                                                img_w=w_img, img_h=h_img)
 
             def _parse_coords(result: dict[str, Any]) -> tuple[int, int] | None:
                 """从 API 响应中提取坐标，支持 coords/center/bbox 多种格式。"""
@@ -307,7 +308,9 @@ class ElementLocator:
                         f'未找到时：{{"found": false, "reason": "原因"}}\n'
                         f'坐标 x 范围 0-{w_img}，y 范围 0-{h_img}，必须为整数。'
                     )
-                    retry_result = self._call_qwen_vl_api(b64_image, element_description, prompt_override=retry_prompt)
+                    retry_result = self._call_qwen_vl_api(b64_image, element_description,
+                                                          prompt_override=retry_prompt,
+                                                          img_w=w_img, img_h=h_img)
                     if retry_result.get("found"):
                         retry_coords = _parse_coords(retry_result)
                         if retry_coords is not None:
@@ -343,6 +346,8 @@ class ElementLocator:
         b64_image: str,
         element_description: str,
         prompt_override: str | None = None,
+        img_w: int = 0,
+        img_h: int = 0,
     ) -> dict[str, Any]:
         """调用 Qwen-VL 多模态 API（OpenAI 兼容接口）。
 
@@ -369,8 +374,13 @@ class ElementLocator:
         if prompt_override is not None:
             prompt = prompt_override
         else:
+            w_str = str(img_w) if img_w > 0 else "未知"
+            h_str = str(img_h) if img_h > 0 else "未知"
+            x_range = f"0-{img_w}" if img_w > 0 else "图像宽度范围"
+            y_range = f"0-{img_h}" if img_h > 0 else "图像高度范围"
             prompt = (
                 f'你是一个精准的UI元素定位模型，专门用于定位安装向导中的可点击按钮。\n'
+                f'当前截图尺寸：{w_str}x{h_str} 像素（坐标基于此尺寸）。\n'
                 f'任务：在截图中找到文字为"{element_description}"的【可点击按钮控件】。\n\n'
                 f'重要区分规则：\n'
                 f'- 只定位外观为按钮的控件（有边框、背景色、或明显的矩形区域）\n'
@@ -381,7 +391,7 @@ class ElementLocator:
                 f'- 只返回一个 JSON 对象，不要任何额外文字或 Markdown\n'
                 f'- 找到按钮时：{{"found": true, "center": [x, y], "confidence": 0.95}}\n'
                 f'- 未找到按钮时：{{"found": false, "reason": "未找到"}}\n'
-                f'- center 是按钮中心点的整数像素坐标，基于图像左上角 (0,0)\n\n'
+                f'- center 是按钮中心点的整数像素坐标，x 范围 {x_range}，y 范围 {y_range}\n\n'
                 f'示例输出（找到"下一步"按钮）：\n'
                 f'{{"found": true, "center": [743, 512], "confidence": 0.97}}\n\n'
                 f'示例输出（未找到）：\n'
