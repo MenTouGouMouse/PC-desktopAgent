@@ -235,8 +235,10 @@ class ElementLocator:
 
             b64_image: str = base64.b64encode(buf.tobytes()).decode("utf-8")
 
+            # P7: 传处理后图像的实际尺寸，让模型知道坐标范围
+            processed_h, processed_w = processed.shape[:2]
             raw_result = self._call_qwen_vl_api(b64_image, element_description,
-                                                img_w=w_img, img_h=h_img)
+                                                img_w=processed_w, img_h=processed_h)
 
             def _parse_coords(result: dict[str, Any]) -> tuple[int, int] | None:
                 """从 API 响应中提取坐标，支持 coords/center/bbox 多种格式。"""

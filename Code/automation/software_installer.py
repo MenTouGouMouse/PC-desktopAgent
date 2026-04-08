@@ -271,7 +271,7 @@ def _activate_installer_window(window_hint: str = "") -> tuple[int, int, int, in
     if w > 0 and h > 0:
         buf = _ctypes.create_unicode_buffer(256)
         user32.GetWindowTextW(hwnd, buf, 256)
-        logger.debug("_activate_installer_window: 已激活 %r 区域=(%d,%d,%d,%d)",
+        logger.info("_activate_installer_window: 已激活 %r 区域=(%d,%d,%d,%d)",
                      buf.value, rect.left, rect.top, w, h)
         return (rect.left, rect.top, w, h)
     return None
@@ -313,7 +313,52 @@ def _launch_package(pkg: Path) -> None:
     )
     if ret <= 32:
         raise RuntimeError(f"无法启动安装包（{translate_shell_error(ret)}）：{pkg}")
-    logger.info("ShellExecuteW runas 启动成功：%s", pkg)
+    logger.info("ShellExecuteW runas 启动成功（已提权）：%s", pkg)
+    # 返回标志：使用了 runas 提权启动
+    return True
+
+
+def _launch_package(pkg: Path) -> bool:
+    """启动安装包，按优先级尝试三种方式。
+
+    1. subprocess.Popen(shell=True) — 最可靠，shell 自动处理特殊字符和空格
+    2. os.startfile — 简单路径的快速路径
+    3. ShellExecuteW runas — 需要管理员权限时的最后手段
+
+    Args:
+        pkg: 已规范化的安装包绝对路径。
+
+    Returns:
+        True 表示使用了 ShellExecuteW runas 提权启动，False 表示普通启动。
+
+    Raises:
+        RuntimeError: 三种方式均失败时抛出，包含中文错误说明。
+    """
+    # 方式一：subprocess.Popen with shell=True
+    try:
+        subprocess.Popen(f'"{pkg}"', shell=True)  # noqa: S602
+        logger.info("subprocess.Popen 启动成功：%s", pkg)
+        return False
+    except Exception as exc:
+        logger.warning("subprocess.Popen 失败，尝试 os.startfile: %s", exc)
+
+    # 方式二：os.startfile
+    try:
+        os.startfile(str(pkg))  # type: ignore[attr-defined]
+        logger.info("os.startfile 启动成功：%s", pkg)
+        return False
+    except OSError as exc:
+        logger.warning("os.startfile 失败，尝试 ShellExecuteW runas: %s", exc)
+
+    # 方式三：ShellExecuteW with runas（触发 UAC 提权弹窗）
+    import ctypes as _ctypes  # noqa: PLC0415
+    ret = _ctypes.windll.shell32.ShellExecuteW(  # type: ignore[attr-defined]
+        None, "runas", str(pkg), None, str(pkg.parent), 1
+    )
+    if ret <= 32:
+        raise RuntimeError(f"无法启动安装包（{translate_shell_error(ret)}）：{pkg}")
+    logger.info("ShellExecuteW runas 启动成功（已提权）：%s", pkg)
+    return True  # 使用了提权启动
 
 
 def run_software_installer(
@@ -351,7 +396,17 @@ def run_software_installer(
     action_engine = ActionEngine()
 
     logger.info("启动安装包进程：%s", pkg)
-    _launch_package(pkg)
+    used_elevation = _launch_package(pkg)
+
+    # P2: UAC 提权隔离警告
+    if used_elevation and not _is_elevated():
+        msg = (
+            "⚠️ 安装包以管理员权限启动，但本应用未提权。"
+            "Windows UIPI 可能阻止鼠标模拟操作（SetCursorPos/mouse_event 对提权窗口无效）。"
+            "建议：右键本应用 → 以管理员身份运行。"
+        )
+        logger.warning(msg)
+        progress_callback(msg, 0)
 
     # 等待安装程序窗口渲染完成（通常需要 2-5 秒）
     logger.info("等待安装程序窗口出现（5秒）...")
