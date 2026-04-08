@@ -6,7 +6,7 @@
 
 - 自然语言指令解析（Qwen3.5-Plus / DashScope API）
 - 多级 GUI 元素定位，带优先级降级：阿里云 GUI-Plus → Qwen3-VL（OpenAI 兼容接口）→ Tesseract OCR → OpenCV 模板匹配 → 经验坐标偏移
-- 鼠标/键盘模拟（进程 DPI awareness = UNAWARE，`SetCursorPos`/`GetCursorPos` 与 `mss` 截图均使用物理坐标，坐标系完全一致，无需 DPI 转换；鼠标移动使用三次贝塞尔曲线生成拟人化轨迹，带随机控制点、ease-out 速度曲线和微抖动；点击全程通过 `ctypes.windll.user32.SetCursorPos` + `mouse_event` 直接操作，绕过 pyautogui 在后台线程的坐标系偏移问题；支持中文输入）
+- 鼠标/键盘模拟（自动检测进程 DPI awareness：Per-Monitor Aware 时 `SetCursorPos` 直接使用 `mss` 物理坐标；UNAWARE/SYSTEM_AWARE 时通过 `GetDeviceCaps(LOGPIXELSX)` 读取缩放比例并将物理坐标转换为逻辑坐标后再传入；屏幕尺寸边界检查同样基于 `mss` 物理像素；鼠标移动使用三次贝塞尔曲线生成拟人化轨迹，带随机控制点、ease-out 速度曲线和微抖动；点击全程通过 `ctypes.windll.user32.SetCursorPos` + `mouse_event` 直接操作，绕过 pyautogui 在后台线程的坐标系偏移问题；支持中文输入）
 - 任务流程录制（pynput）与回放（JSON 模板）
 - Gradio Web UI，实时屏幕预览
 - 双数据库记忆系统：ChromaDB（向量检索）+ SQLite（结构化存储）

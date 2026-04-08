@@ -277,47 +277,6 @@ def _activate_installer_window(window_hint: str = "") -> tuple[int, int, int, in
     return None
 
 
-def _launch_package(pkg: Path) -> None:
-    """启动安装包，按优先级尝试三种方式。
-
-    1. subprocess.Popen(shell=True) — 最可靠，shell 自动处理特殊字符和空格
-    2. os.startfile — 简单路径的快速路径
-    3. ShellExecuteW runas — 需要管理员权限时的最后手段
-
-    Args:
-        pkg: 已规范化的安装包绝对路径。
-
-    Raises:
-        RuntimeError: 三种方式均失败时抛出，包含中文错误说明。
-    """
-    # 方式一：subprocess.Popen with shell=True — 用双引号包裹路径，可靠处理空格和特殊字符
-    try:
-        subprocess.Popen(f'"{pkg}"', shell=True)  # noqa: S602
-        logger.info("subprocess.Popen 启动成功：%s", pkg)
-        return
-    except Exception as exc:
-        logger.warning("subprocess.Popen 失败，尝试 os.startfile: %s", exc)
-
-    # 方式二：os.startfile
-    try:
-        os.startfile(str(pkg))  # type: ignore[attr-defined]
-        logger.info("os.startfile 启动成功：%s", pkg)
-        return
-    except OSError as exc:
-        logger.warning("os.startfile 失败，尝试 ShellExecuteW runas: %s", exc)
-
-    # 方式三：ShellExecuteW with runas（触发 UAC 提权弹窗）
-    import ctypes as _ctypes  # noqa: PLC0415
-    ret = _ctypes.windll.shell32.ShellExecuteW(  # type: ignore[attr-defined]
-        None, "runas", str(pkg), None, str(pkg.parent), 1
-    )
-    if ret <= 32:
-        raise RuntimeError(f"无法启动安装包（{translate_shell_error(ret)}）：{pkg}")
-    logger.info("ShellExecuteW runas 启动成功（已提权）：%s", pkg)
-    # 返回标志：使用了 runas 提权启动
-    return True
-
-
 def _launch_package(pkg: Path) -> bool:
     """启动安装包，按优先级尝试三种方式。
 

@@ -139,40 +139,34 @@ def _ease_out(t: float) -> float:
 def human_like_move(target_x: int, target_y: int) -> None:
     """从当前鼠标位置沿贝塞尔曲线拟人化移动到目标坐标。
 
-    坐标系说明（main_gui.py 已设置 Per-Monitor DPI Aware v2）：
-    - SetCursorPos / GetCursorPos 使用物理像素坐标
-    - mss 截图也是物理像素坐标，两者完全一致
-    - 无需任何 DPI 转换
-
-    Args:
-        target_x: 目标 X 坐标（物理像素坐标，与 mss 截图一致）。
-        target_y: 目标 Y 坐标（物理像素坐标）。
+    target_x/target_y 是 mss 物理像素坐标。
+    内部自动读取 DPI scale 和 awareness，转换为 pyautogui 期望的坐标系。
     """
-    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    scale = _get_dpi_scale()
+    awareness = _get_awareness()
 
-    # 用 GetCursorPos 读起点（物理坐标，与 target 坐标系一致）
-    class _PT(ctypes.Structure):
-        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-    pt = _PT()
-    user32.GetCursorPos(ctypes.byref(pt))
-    start = (float(pt.x), float(pt.y))
+    # 当前鼠标位置（pyautogui 坐标系）→ 还原为物理坐标用于路径计算
+    cur = pyautogui.position()
+    cur_phys_x, cur_phys_y = _logical_to_phys(cur.x, cur.y, scale, awareness)
+
+    start = (float(cur_phys_x), float(cur_phys_y))
     end = (float(target_x), float(target_y))
-
     dist = math.hypot(end[0] - start[0], end[1] - start[1])
 
     if dist < 5:
-        user32.SetCursorPos(target_x, target_y)
+        lx, ly = _phys_to_logical(target_x, target_y, scale, awareness)
+        pyautogui.moveTo(lx, ly)
         return
 
     total_time = max(0.15, min(0.5, dist / 2000))
-
-    path = _generate_path(start, end)
+    path = _generate_path(start, end)  # 物理坐标系路径
     n = len(path)
     hesitate_idx = int(n * 0.85)
     hesitated = False
 
     for i, (px, py) in enumerate(path):
-        user32.SetCursorPos(px, py)
+        lx, ly = _phys_to_logical(px, py, scale, awareness)
+        pyautogui.moveTo(lx, ly)
 
         if not hesitated and i >= hesitate_idx:
             time.sleep(random.uniform(0.02, 0.06))
@@ -195,12 +189,91 @@ class CoordinateOutOfBoundsError(Exception):
 
 
 def _get_screen_size() -> tuple[int, int]:
-    """返回主屏幕的逻辑尺寸 (width, height)。"""
-    return pyautogui.size()
+    """返回主屏幕的物理像素尺寸 (width, height)。
+
+    用 mss 读取，与截图坐标系一致。
+    """
+    import mss as _mss
+    with _mss.mss() as sct:
+        m = sct.monitors[1]
+        return m["width"], m["height"]
+
+
+def _get_dpi_scale() -> float:
+    """从 OS 读取主显示器的 DPI 缩放比例。
+
+    优先使用 GetScaleFactorForMonitor（最准确，不受 DPI awareness 影响）。
+    回退到 GetDpiForSystem / GetDeviceCaps。
+    150% 缩放返回 1.5，100% 返回 1.0。
+    """
+    try:
+        import ctypes.wintypes as _wt
+        # 获取主显示器句柄
+        hmon = ctypes.windll.user32.MonitorFromPoint(  # type: ignore[attr-defined]
+            _wt.POINT(0, 0), 2  # MONITOR_DEFAULTTOPRIMARY
+        )
+        sf = ctypes.c_uint(0)
+        hr = ctypes.windll.shcore.GetScaleFactorForMonitor(hmon, ctypes.byref(sf))  # type: ignore[attr-defined]
+        if hr == 0 and sf.value > 0:
+            return sf.value / 100.0
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 回退：GetDpiForSystem
+    try:
+        dpi = ctypes.windll.user32.GetDpiForSystem()  # type: ignore[attr-defined]
+        if dpi > 0:
+            return dpi / 96.0
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 最后回退：GetDeviceCaps
+    try:
+        hdc = ctypes.windll.user32.GetDC(0)  # type: ignore[attr-defined]
+        dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX  # type: ignore[attr-defined]
+        ctypes.windll.user32.ReleaseDC(0, hdc)  # type: ignore[attr-defined]
+        if dpi > 0:
+            return dpi / 96.0
+    except Exception:  # noqa: BLE001
+        pass
+
+    return 1.0
+
+
+# ---------------------------------------------------------------------------
+# DPI 自适应：缓存 scale 和 awareness，避免每次调用都重新读取
+# ---------------------------------------------------------------------------
+
+def _get_awareness() -> int:
+    """读取当前进程的 DPI awareness 级别（0=UNAWARE, 1=SYSTEM, 2=PER_MONITOR）。"""
+    try:
+        v = ctypes.c_int(0)
+        ctypes.windll.shcore.GetProcessDpiAwareness(0, ctypes.byref(v))  # type: ignore[attr-defined]
+        return v.value
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _phys_to_logical(px: int, py: int, scale: float, awareness: int) -> tuple[int, int]:
+    """将 mss 物理像素坐标转换为 pyautogui.moveTo 期望的坐标。
+
+    awareness < 2 时 pyautogui 使用逻辑坐标（物理/scale）。
+    awareness >= 2 时 pyautogui 使用物理坐标，无需转换。
+    """
+    if awareness >= 2 or scale <= 1.0:
+        return px, py
+    return round(px / scale), round(py / scale)
+
+
+def _logical_to_phys(lx: int, ly: int, scale: float, awareness: int) -> tuple[int, int]:
+    """将 pyautogui.position() 返回的坐标转换为物理像素坐标。"""
+    if awareness >= 2 or scale <= 1.0:
+        return lx, ly
+    return round(lx * scale), round(ly * scale)
 
 
 def _is_in_bounds(x: int, y: int) -> bool:
-    """检查逻辑坐标是否在主屏幕范围内。"""
+    """检查物理像素坐标是否在主屏幕范围内。"""
     w, h = _get_screen_size()
     return 0 <= x < w and 0 <= y < h
 
@@ -291,57 +364,48 @@ class ActionEngine:
         logger.info("click: 开始 — 目标=(%d,%d) screen=%dx%d", x, y, sw, sh)
 
         try:
-            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            scale = _get_dpi_scale()
+            awareness = _get_awareness()
 
             # 贝塞尔移动
             human_like_move(x, y)
-            time.sleep(0.02)  # 等待系统刷新鼠标位置
+            time.sleep(0.02)
 
-            # 读取实际位置并验证
-            class _PT(ctypes.Structure):
-                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-            pt = _PT()
-            user32.GetCursorPos(ctypes.byref(pt))
-            deviation = math.hypot(pt.x - x, pt.y - y)
+            # 验证实际位置
+            cur = pyautogui.position()
+            actual_phys_x, actual_phys_y = _logical_to_phys(cur.x, cur.y, scale, awareness)
+            deviation = math.hypot(actual_phys_x - x, actual_phys_y - y)
             logger.info(
-                "click: 移动耗时=%.3fs 实际位置=(%d,%d) 期望=(%d,%d) 偏差=%.0fpx",
-                time.monotonic() - t0, pt.x, pt.y, x, y, deviation,
+                "click: 移动耗时=%.3fs 实际物理=(%d,%d) 期望=(%d,%d) 偏差=%.0fpx scale=%.2f awareness=%d",
+                time.monotonic() - t0, actual_phys_x, actual_phys_y, x, y, deviation, scale, awareness,
             )
 
-            # 偏差超过 10px 时直接跳转（兜底保证）
-            if deviation > 10:
-                logger.warning("click: 偏差%.0fpx 超限，直接跳转到目标", deviation)
-                user32.SetCursorPos(x, y)
+            # 偏差超过 15px 时直接跳转
+            if deviation > 15:
+                logger.warning("click: 偏差%.0fpx 超限，直接跳转", deviation)
+                lx, ly = _phys_to_logical(x, y, scale, awareness)
+                pyautogui.moveTo(lx, ly)
                 time.sleep(0.02)
 
-            # 微调 ±2px
-            fine_x = max(0, min(x + random.randint(-2, 2), sw - 1))
-            fine_y = max(0, min(y + random.randint(-2, 2), sh - 1))
-            user32.SetCursorPos(fine_x, fine_y)
+            # 微调 ±2px（物理坐标），转换后移动
+            fine_phys_x = max(0, min(x + random.randint(-2, 2), sw - 1))
+            fine_phys_y = max(0, min(y + random.randint(-2, 2), sh - 1))
+            fine_lx, fine_ly = _phys_to_logical(fine_phys_x, fine_phys_y, scale, awareness)
+            pyautogui.moveTo(fine_lx, fine_ly)
             time.sleep(0.05)
 
-            # 点击
+            # 点击（用 pyautogui，与 moveTo 坐标系一致）
             if click_type == "right":
-                user32.mouse_event(_MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
-                time.sleep(0.04)
-                user32.mouse_event(_MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+                pyautogui.rightClick()
             elif click_type == "double":
-                user32.mouse_event(_MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                time.sleep(0.04)
-                user32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                time.sleep(0.08)
-                user32.mouse_event(_MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                time.sleep(0.04)
-                user32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-            else:  # single
-                user32.mouse_event(_MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                time.sleep(0.04)
-                user32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                pyautogui.doubleClick()
+            else:
+                pyautogui.click()
 
             time.sleep(0.15)
             logger.info(
                 "click: 完成 — 总耗时=%.3fs 目标=(%d,%d) 实际=(%d,%d) type=%s",
-                time.monotonic() - t0, x, y, fine_x, fine_y, click_type,
+                time.monotonic() - t0, x, y, fine_phys_x, fine_phys_y, click_type,
             )
             return True
 
