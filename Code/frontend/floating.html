@@ -1,0 +1,68 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 80px;
+        height: 80px;
+        background: transparent !important;
+        overflow: hidden;
+      }
+      #ball {
+        width: 80px;
+        height: 80px;
+        border-radius: 50%;
+        background: rgba(99, 102, 241, 0.92);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: grab;
+        user-select: none;
+      }
+      #progress-text {
+        color: #fff;
+        font-size: 18px;
+        font-weight: bold;
+        font-family: system-ui, sans-serif;
+      }
+    </style>
+  </head>
+  <body style="background:transparent;">
+    <div id="ball">
+      <span id="progress-text">0%</span>
+    </div>
+    <script>
+      // Double-click to restore main window
+      document.getElementById("ball").addEventListener("dblclick", function () {
+        window.pywebview.api.restore_main_window();
+      });
+
+      // Drag to move window
+      var dragging = false;
+      document.getElementById("ball").addEventListener("mousedown", function (e) {
+        dragging = true;
+      });
+      document.addEventListener("mousemove", function (e) {
+        if (!dragging) return;
+        var x = Math.max(0, Math.min(screen.width - 80, e.screenX - 40));
+        var y = Math.max(0, Math.min(screen.height - 80, e.screenY - 40));
+        window.pywebview.api.move_ball_window(x, y);
+      });
+      document.addEventListener("mouseup", function () {
+        dragging = false;
+      });
+
+      // Progress update function called from Python
+      function updateProgress(percent, statusText, isRunning) {
+        document.getElementById("progress-text").textContent = percent + "%";
+      }
+    </script>
+  </body>
+</html>

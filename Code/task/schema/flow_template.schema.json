@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["version", "name", "created_at", "steps"],
+  "properties": {
+    "version": { "type": "string" },
+    "name": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "steps": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Step" }
+    }
+  },
+  "definitions": {
+    "Step": {
+      "type": "object",
+      "required": ["step_id", "action_type", "parameters", "delay_ms"],
+      "properties": {
+        "step_id": { "type": "integer" },
+        "action_type": {
+          "type": "string",
+          "enum": ["mouse_click", "mouse_move", "key_press", "type_text"]
+        },
+        "parameters": { "type": "object" },
+        "delay_ms": { "type": "integer", "minimum": 0 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action_type": { "enum": ["mouse_click", "mouse_move"] }
+            }
+          },
+          "then": {
+            "properties": {
+              "parameters": {
+                "required": ["x", "y"],
+                "properties": {
+                  "x": { "type": "integer" },
+                  "y": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "action_type": { "const": "key_press" } } },
+          "then": {
+            "properties": {
+              "parameters": {
+                "required": ["key"],
+                "properties": { "key": { "type": "string" } }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "action_type": { "const": "type_text" } } },
+          "then": {
+            "properties": {
+              "parameters": {
+                "required": ["text"],
+                "properties": { "text": { "type": "string" } }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

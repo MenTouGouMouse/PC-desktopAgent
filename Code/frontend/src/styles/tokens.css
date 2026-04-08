@@ -1,0 +1,13 @@
+:root {
+  --bg-primary: #0a0e1a;
+  --bg-secondary: #111827;
+  --bg-glass: rgba(17, 24, 39, 0.8);
+  --accent-cyan: #00d4ff;
+  --accent-purple: #7c3aed;
+  --accent-green: #00ff88;
+  --text-primary: #e2e8f0;
+  --text-muted: #64748b;
+  --border-glow: rgba(0, 212, 255, 0.3);
+  --gradient-btn: linear-gradient(135deg, #00d4ff, #7c3aed);
+  --gradient-progress: linear-gradient(90deg, #00d4ff, #00ff88);
+}

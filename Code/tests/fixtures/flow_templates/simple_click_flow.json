@@ -1,0 +1,25 @@
+{
+  "version": "1.0",
+  "name": "simple_click_flow",
+  "created_at": "2024-01-01T00:00:00Z",
+  "steps": [
+    {
+      "step_id": 1,
+      "action_type": "mouse_move",
+      "parameters": {"x": 100, "y": 200},
+      "delay_ms": 50
+    },
+    {
+      "step_id": 2,
+      "action_type": "mouse_click",
+      "parameters": {"x": 100, "y": 200},
+      "delay_ms": 100
+    },
+    {
+      "step_id": 3,
+      "action_type": "type_text",
+      "parameters": {"text": "hello"},
+      "delay_ms": 0
+    }
+  ]
+}

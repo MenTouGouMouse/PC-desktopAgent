@@ -1,0 +1,64 @@
+# 屏幕捕获配置
+capture:
+  fps: 15
+  default_monitor: 0
+
+# 重试机制配置
+retry:
+  max_attempts: 3
+  initial_wait_sec: 1
+  jitter_max_sec: 1
+  element_timeout_sec: 10
+
+# Agent 配置
+agent:
+  model: "qwen-plus"
+  max_iterations: 50
+  memory_max_tokens: 2000
+
+# UI 配置
+ui:
+  preview_fps: 15
+  queue_timeout_sec: 300
+
+# OCR 配置
+ocr:
+  tesseract_cmd: "E:\\SDKs\\python\\python-Tesseract\\tesseract.exe"
+
+# Chat Agent 配置
+chat_model: "qwen-plus"
+
+# 文件整理模式配置
+file_organize_mode: "vision_first"
+
+# 视觉识别配置
+vision:
+  ocr_confidence_threshold: 60.0
+  drag_duration_sec: 0.5
+  template_match_threshold: 0.8
+  icon_ocr_y_offset: 40
+  icon_ocr_height: 20
+  # 文件整理置信度门控：vision_first 模式下，视觉定位置信度低于此值的文件
+  # 不会被直接移动，而是加入"待确认"列表，弹窗询问用户是否继续。
+  # 取值范围 0.0~1.0；设为 0.0 则关闭门控（全部移动，等同旧行为）。
+  move_confidence_threshold: 0.6
+  qwen_vl_model: "qwen3-vl-plus"
+  # Qwen-VL API 参数配置
+  qwen_vl_max_tokens: 4096 # API max_tokens，范围 1024~8192，防止多文件场景输出截断
+  qwen_vl_temperature: 0.1 # API temperature，控制输出随机性
+  # 分块识别配置（大窗口场景）
+  chunk_height: 1000 # 分块高度（像素），每块独立调用 API
+  chunk_overlap: 100 # 分块重叠（像素），相邻块重叠区域
+  chunk_trigger_height: 2000 # 触发分块的高度阈值（像素），超过此高度自动分块
+  # NMS 去重配置
+  nms_iou_threshold: 0.5 # NMS IoU 阈值，用于去除重叠检测框
+
+# 文件整理路径配置（新增）
+organize_path: "explorer_path" # "screenshot_path" | "explorer_path"
+
+# 识别框叠加配置
+vision_box:
+  enabled: true # 总开关；false 时 set_show_boxes 无效
+  color: "red" # 保留字段，当前由 confidence_threshold 决定颜色
+  show_confidence: true # false 时标签仅显示 label，不含置信度数值
+  confidence_threshold: 0.5 # 高/低置信度颜色分界线
