@@ -246,7 +246,12 @@ class OCRHelper:
         logger.debug("find_text_bbox: target %r not found in OCR results", target)
         return None
 
-    def find_button_bbox(self, image: np.ndarray, target: str) -> ElementResult | None:
+    def find_button_bbox(
+        self,
+        image: np.ndarray,
+        target: str,
+        window_bbox: tuple[int, int, int, int] | None = None,
+    ) -> ElementResult | None:
         """在图像中定位包含 target 文本的【按钮控件】区域。
 
         与 find_text_bbox 的区别：优先返回屏幕下半部分的匹配项，
@@ -260,12 +265,26 @@ class OCRHelper:
         Args:
             image: BGR uint8 numpy 数组（原始截图）。
             target: 要搜索的目标按钮文字。
+            window_bbox: 可选的安装窗口客户区边界框 (x, y, w, h)，逻辑坐标。
+                当提供时，OCR 仅在该区域内执行，避免误匹配窗口外的正文文字。
+                返回坐标已还原为原始截图坐标系。
 
         Returns:
             最可能是按钮的 ElementResult，未找到时返回 None。
         """
         if not target:
             return None
+
+        # 当提供 window_bbox 时，裁剪图像到窗口区域，记录偏移量用于坐标还原
+        offset_x, offset_y = 0, 0
+        if window_bbox is not None:
+            wx, wy, ww, wh = window_bbox
+            image = image[wy:wy + wh, wx:wx + ww]
+            offset_x, offset_y = wx, wy
+            logger.debug(
+                "find_button_bbox: cropped to window_bbox=(%d,%d,%d,%d), offset=(%d,%d)",
+                wx, wy, ww, wh, offset_x, offset_y,
+            )
 
         img_h, img_w = image.shape[:2]
         # 按钮文字块高度上限：超过屏高 8% 认为是正文段落
@@ -296,8 +315,8 @@ class OCRHelper:
             except (ValueError, TypeError):
                 conf_int = -1
             confidence = max(0.0, conf_int / 100.0) if conf_int >= 0 else 0.0
-            x = int(data["left"][i]) // 2
-            y = int(data["top"][i]) // 2
+            x = int(data["left"][i]) // 2 + offset_x
+            y = int(data["top"][i]) // 2 + offset_y
             w = max(1, int(data["width"][i]) // 2)
             h = max(1, int(data["height"][i]) // 2)
             return ElementResult(
@@ -355,7 +374,7 @@ class OCRHelper:
                     confidence = max(0.0, conf_int / 100.0) if conf_int >= 0 else 0.0
                     r = ElementResult(
                         name=combined.strip(),
-                        bbox=(x_min, y_min, merged_w, merged_h),
+                        bbox=(x_min + offset_x, y_min + offset_y, merged_w, merged_h),
                         confidence=confidence,
                         strategy="ocr",
                     )

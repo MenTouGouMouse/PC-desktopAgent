@@ -196,11 +196,14 @@ class PythonAPI:
             logger.exception("start_file_organizer unexpected error")
             return {"success": False, "error": str(exc)}
 
-    def start_smart_installer(self) -> dict:
+    def start_smart_installer(self, install_mode: str = "visual_with_fallback") -> dict:
         """Start the smart installer task in a background thread.
 
         Opens a file dialog for the user to select an installer package,
         then launches it with UAC elevation and monitors installation progress.
+
+        Args:
+            install_mode: "silent" | "visual_with_fallback" (default).
 
         Returns:
             {"success": True, "task_name": "smart_installer"} on success,
@@ -210,10 +213,15 @@ class PythonAPI:
             if self._progress_manager.get().is_running:
                 return {"success": False, "error": "Task already running"}
 
+            # Validate mode
+            valid_modes = ("silent", "visual", "visual_with_fallback")
+            if install_mode not in valid_modes:
+                install_mode = "visual_with_fallback"
+
             # Let user pick the installer file first
             settings = self._load_user_settings()
             installer_default_dir = settings.get("installer_default_dir") or os.path.expanduser("~/Downloads")
-            logger.info("start_smart_installer: opening file dialog, initial_dir=%s", installer_default_dir)
+            logger.info("start_smart_installer: opening file dialog, mode=%s initial_dir=%s", install_mode, installer_default_dir)
 
             if self._main_win is None:
                 return {"success": False, "error": "主窗口未初始化"}
@@ -246,7 +254,12 @@ class PythonAPI:
                     self._push_js_log(f"[智能安装] {step}")
 
                 try:
-                    run_software_installer(package_path, _callback, self._stop_event, initial_dir=installer_default_dir, detection_cache=self._detection_cache)
+                    run_software_installer(
+                        package_path, _callback, self._stop_event,
+                        initial_dir=installer_default_dir,
+                        detection_cache=self._detection_cache,
+                        install_mode=install_mode,  # type: ignore[arg-type]
+                    )
                     self._progress_manager.update(100, "智能安装完成", "smart_installer", is_running=False)
                     self._push_js_progress(100, "智能安装完成", is_running=False)
                     if self._app is not None:

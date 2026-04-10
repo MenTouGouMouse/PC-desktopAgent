@@ -6,7 +6,7 @@
 
 export interface PyWebViewAPI {
   startFileOrganizer: () => Promise<unknown> | undefined;
-  startSmartInstaller: () => Promise<unknown> | undefined;
+  startSmartInstaller: (mode?: 'silent' | 'visual_with_fallback') => Promise<unknown> | undefined;
   minimizeToBall: () => Promise<unknown> | undefined;
   restoreMainWindow: () => Promise<unknown> | undefined;
   getProgress: () => Promise<unknown> | undefined;
@@ -29,7 +29,7 @@ export function usePyWebView(): PyWebViewAPI {
 
   return {
     startFileOrganizer: () => getApi()?.start_file_organizer(),
-    startSmartInstaller: () => getApi()?.start_smart_installer(),
+    startSmartInstaller: (mode?: 'silent' | 'visual_with_fallback') => getApi()?.start_smart_installer(mode ?? 'visual_with_fallback'),
     minimizeToBall: () => getApi()?.minimize_to_ball(),
     restoreMainWindow: () => getApi()?.restore_main_window(),
     getProgress: () => getApi()?.get_progress(),

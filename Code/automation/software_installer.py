@@ -1,8 +1,12 @@
 """
 automation.software_installer — 真实智能安装执行器。
 
-启动安装包进程，通过感知层定位安装按钮，通过执行层模拟点击，
-通过 progress_callback 实时上报每个安装步骤进度。
+支持三种安装模式（通过 install_mode 参数控制）：
+
+- "silent"：静默模式，pywinauto 控件 API 直接定位点击，无视觉 API 调用，速度最快。
+- "visual"：纯视觉模式，Qwen-VL / OCR 定位，失败则抛出异常（不降级）。
+- "visual_with_fallback"（默认）：视觉优先，视觉失败时自动降级到 pywinauto，
+  始终向 detection_cache 推送识别框供 GUI 展示。
 """
 from __future__ import annotations
 
@@ -17,10 +21,12 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from automation.object_detector import DetectionCache
+
+InstallMode = Literal["silent", "visual", "visual_with_fallback"]
 
 logger = logging.getLogger(__name__)
 
@@ -326,6 +332,7 @@ def run_software_installer(
     stop_event: threading.Event,
     initial_dir: str | None = None,
     detection_cache: DetectionCache | None = None,
+    install_mode: InstallMode = "visual_with_fallback",
 ) -> None:
     """执行真实智能安装任务。
 
@@ -335,6 +342,11 @@ def run_software_installer(
         stop_event: 外部停止信号。
         initial_dir: 保留参数，供调用方记录文件选择对话框的初始目录（当前未使用）。
         detection_cache: 可选 DetectionCache，供 GUI 预览叠加识别框。
+        install_mode: 安装模式。
+            - "silent"：pywinauto 控件 API，无视觉调用，速度最快。
+            - "visual"：纯视觉（Qwen-VL/OCR），失败不降级。
+            - "visual_with_fallback"（默认）：视觉优先，失败降级到 pywinauto，
+              始终推送识别框到 detection_cache。
 
     Raises:
         FileNotFoundError: package_path 不存在时抛出，消息包含路径。
@@ -371,6 +383,16 @@ def run_software_installer(
     logger.info("等待安装程序窗口出现（5秒）...")
     time.sleep(5)
 
+    # 视觉诊断（DEBUG_VISION=true 时在后台线程中执行，不阻塞安装流程）
+    try:
+        from automation.vision_diagnose import diagnose_vision_async
+        _diag_screenshot = screen_capturer.capture_full().copy()
+        diagnose_vision_async(_diag_screenshot)
+    except Exception as _diag_exc:  # noqa: BLE001
+        logger.debug("视觉诊断启动失败（不影响安装）：%s", _diag_exc)
+
+    logger.info("安装模式：%s", install_mode)
+
     total = len(INSTALL_STEPS)
     current_percent = 0
 
@@ -381,54 +403,127 @@ def run_software_installer(
                 return
 
             current_percent = int((i + 1) / total * 100)
-            logger.info("开始安装步骤 %d/%d：%s", i + 1, total, step.step_name)
+            logger.info("开始安装步骤 %d/%d：%s [模式=%s]", i + 1, total, step.step_name, install_mode)
 
-            # Wait for button to appear within timeout
             deadline = time.monotonic() + step.timeout
             found = False
-            # All candidate texts to try: primary + aliases
             candidates = [step.button_text] + (step.aliases or [])
 
             while time.monotonic() < deadline:
                 if stop_event.is_set():
-                    logger.info("智能安装任务收到停止信号，已中止（步骤 %d/%d）", i + 1, total)
                     return
 
                 for candidate in candidates:
                     try:
-                        # 激活安装窗口并获取窗口区域（用于裁剪截图，减少干扰）
                         win_rect = _activate_installer_window(pkg.stem)
 
-                        # 优先截取安装窗口区域，减少背景干扰，提升 Qwen-VL 识别准确率
-                        if win_rect is not None:
-                            wx, wy, ww, wh = win_rect
-                            try:
-                                screenshot = screen_capturer.capture_region(wx, wy, ww, wh)
-                                coord_offset = (wx, wy)
-                            except Exception:
+                        # ── 静默模式：仅 pywinauto ──────────────────────────────
+                        if install_mode == "silent":
+                            result = element_locator.locate_by_text_silent(
+                                candidate, window_title_hint=pkg.stem
+                            )
+                            # 静默模式也推送识别框（可选展示）
+                            if detection_cache is not None:
+                                x, y, w, h = result.bbox
+                                detection_cache.update([BoundingBoxDict(
+                                    bbox=[x, y, x + w, y + h],
+                                    label=f"[静默] {candidate}",
+                                    confidence=result.confidence,
+                                )])
+
+                        # ── 纯视觉模式：Qwen-VL/OCR，不降级 ────────────────────
+                        elif install_mode == "visual":
+                            if win_rect is not None:
+                                wx, wy, ww, wh = win_rect
+                                try:
+                                    screenshot = screen_capturer.capture_region_abs(wx, wy, ww, wh)
+                                    coord_offset = (wx, wy)
+                                except Exception:
+                                    screenshot = screen_capturer.capture_full()
+                                    coord_offset = (0, 0)
+                            else:
                                 screenshot = screen_capturer.capture_full()
                                 coord_offset = (0, 0)
-                        else:
-                            screenshot = screen_capturer.capture_full()
-                            coord_offset = (0, 0)
 
-                        result = element_locator.locate_by_text(screenshot, candidate)
-                        if detection_cache is not None:
-                            detection_cache.update([BoundingBoxDict(
-                                bbox=list(result.bbox),
-                                label=candidate,
-                                confidence=result.confidence,
-                            )])
-                        # bbox 中心点 + 窗口偏移 = 屏幕绝对坐标
-                        cx = result.bbox[0] + result.bbox[2] // 2 + coord_offset[0]
-                        cy = result.bbox[1] + result.bbox[3] // 2 + coord_offset[1]
-                        action_engine.click(cx, cy)
+                            result = element_locator.locate_by_text(screenshot, candidate)
+                            if detection_cache is not None:
+                                x, y, w, h = result.bbox
+                                detection_cache.update([BoundingBoxDict(
+                                    bbox=[
+                                        int(x + coord_offset[0]),
+                                        int(y + coord_offset[1]),
+                                        int(x + w + coord_offset[0]),
+                                        int(y + h + coord_offset[1]),
+                                    ],
+                                    label=f"[视觉] {candidate}",
+                                    confidence=result.confidence,
+                                )])
+
+                        # ── 视觉优先+降级模式（默认）────────────────────────────
+                        else:  # visual_with_fallback
+                            if win_rect is not None:
+                                wx, wy, ww, wh = win_rect
+                                try:
+                                    screenshot = screen_capturer.capture_region_abs(wx, wy, ww, wh)
+                                    coord_offset = (wx, wy)
+                                except Exception:
+                                    screenshot = screen_capturer.capture_full()
+                                    coord_offset = (0, 0)
+                            else:
+                                screenshot = screen_capturer.capture_full()
+                                coord_offset = (0, 0)
+
+                            result = element_locator.locate_by_text_visual_with_fallback(
+                                screenshot, candidate,
+                                window_title_hint=pkg.stem,
+                            )
+                            # 根据 strategy 决定标签前缀，方便 UI 区分来源
+                            strategy_label = (
+                                "[视觉↓控件]" if result.strategy == "pywinauto_fallback"
+                                else "[视觉]"
+                            )
+                            if detection_cache is not None:
+                                x, y, w, h = result.bbox
+                                # pywinauto_fallback 返回的是屏幕绝对逻辑坐标，不需要加 offset
+                                if result.strategy == "pywinauto_fallback":
+                                    detection_cache.update([BoundingBoxDict(
+                                        bbox=[x, y, x + w, y + h],
+                                        label=f"{strategy_label} {candidate}",
+                                        confidence=result.confidence,
+                                    )])
+                                else:
+                                    detection_cache.update([BoundingBoxDict(
+                                        bbox=[
+                                            int(x + coord_offset[0]),
+                                            int(y + coord_offset[1]),
+                                            int(x + w + coord_offset[0]),
+                                            int(y + h + coord_offset[1]),
+                                        ],
+                                        label=f"{strategy_label} {candidate}",
+                                        confidence=result.confidence,
+                                    )])
+
+                        # ── 通用：计算点击坐标并执行 ────────────────────────────
+                        x, y, w, h = result.bbox
+                        if result.strategy in ("pywinauto", "pywinauto_fallback"):
+                            # pywinauto 返回屏幕绝对逻辑坐标，直接用
+                            cx = x + w // 2
+                            cy = y + h // 2
+                        else:
+                            # 视觉策略返回窗口内坐标，需加 offset
+                            cx = x + w // 2 + coord_offset[0]
+                            cy = y + h // 2 + coord_offset[1]
+
+                        if not action_engine.click(cx, cy):
+                            raise RuntimeError(f"点击失败：candidate={candidate!r} pos=({cx},{cy})")
+
                         logger.info(
-                            "点击按钮成功：%s（候选文字=%r），坐标=(%d, %d)",
-                            step.button_text, candidate, cx, cy,
+                            "点击按钮成功：%s（候选=%r，策略=%s），坐标=(%d,%d)",
+                            step.button_text, candidate, result.strategy, cx, cy,
                         )
                         found = True
                         break
+
                     except Exception as exc:
                         logger.warning("候选文字 %r 定位失败：%s", candidate, exc)
 

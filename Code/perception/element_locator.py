@@ -73,6 +73,83 @@ class ElementLocator:
         self._dpi = _DPIAdapter()
 
     # ------------------------------------------------------------------
+    # 策略 0：pywinauto 控件 API（仅用于标准 Win32 安装窗口）
+    # ------------------------------------------------------------------
+
+    def _locate_by_pywinauto(
+        self,
+        element_description: str,
+        window_title_hint: str = "",
+    ) -> ElementResult | None:
+        """使用 pywinauto 枚举 Win32 控件，精确定位按钮（优先级 0）。
+
+        直接读取控件的屏幕物理坐标，不依赖视觉识别，精度最高。
+        仅适用于标准 Win32/MFC 安装窗口（NSIS、Inno Setup 等）。
+        Electron/自定义渲染窗口不适用，失败时静默返回 None 触发降级。
+
+        Args:
+            element_description: 目标按钮文字（支持部分匹配，如"下一步"匹配"下一步(N)"）。
+            window_title_hint: 安装窗口标题关键词，用于快速定位窗口。
+
+        Returns:
+            识别成功时返回 :class:`ElementResult`（strategy="pywinauto"，逻辑坐标）；
+            失败时返回 ``None``。
+        """
+        try:
+            from pywinauto import Application  # type: ignore[import-untyped]
+
+            title_re = f".*{window_title_hint}.*" if window_title_hint else ".*安装.*|.*Setup.*|.*Install.*"
+            app = Application(backend="win32").connect(title_re=title_re, timeout=2)
+            win = app.top_window()
+
+            for ctrl in win.descendants():
+                try:
+                    if ctrl.friendly_class_name() != "Button":
+                        continue
+                    txt = ctrl.window_text().strip()
+                    if not txt:
+                        continue
+                    # 部分匹配：支持"下一步"匹配"下一步(&N) >"等变体
+                    if element_description not in txt:
+                        continue
+
+                    rect = ctrl.rectangle()
+                    # 屏幕物理坐标 → 逻辑坐标
+                    cx_phys = (rect.left + rect.right) // 2
+                    cy_phys = (rect.top + rect.bottom) // 2
+                    lx, ly = self._dpi.to_logical(cx_phys, cy_phys)
+                    w_phys = rect.right - rect.left
+                    h_phys = rect.bottom - rect.top
+                    lw = max(1, int(round(w_phys / self._dpi.scale_factor)))
+                    lh = max(1, int(round(h_phys / self._dpi.scale_factor)))
+
+                    bbox: tuple[int, int, int, int] = (
+                        lx - lw // 2,
+                        ly - lh // 2,
+                        lw,
+                        lh,
+                    )
+                    logger.info(
+                        "pywinauto 策略：识别成功。element=%s, text=%r, phys=(%d,%d) -> logical=(%d,%d)",
+                        element_description, txt, cx_phys, cy_phys, lx, ly,
+                    )
+                    return ElementResult(
+                        name=txt,
+                        bbox=bbox,
+                        confidence=1.0,
+                        strategy="pywinauto",
+                    )
+                except Exception:  # noqa: BLE001
+                    continue
+
+            logger.debug("pywinauto 策略：未找到按钮 %r，触发降级", element_description)
+            return None
+
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("pywinauto 策略：不可用，触发降级。error=%s", exc)
+            return None
+
+    # ------------------------------------------------------------------
     # 策略 1：阿里云视觉智能平台 DetectImageElements
     # ------------------------------------------------------------------
 
@@ -261,23 +338,27 @@ class ElementLocator:
                 return None
 
             def _build_result(cx_phys: int, cy_phys: int, confidence: float) -> ElementResult:
-                """将物理坐标中心点还原 scale_ratio 后构造 ElementResult。
+                """将物理坐标中心点还原 scale_ratio 后转换为逻辑坐标，构造 ElementResult。
 
-                本进程为 Per-Monitor DPI Aware，mss 物理坐标 == SetCursorPos 物理坐标，
-                坐标系一致，不需要额外转换，仅需还原 scale_ratio 到原始图像坐标。
+                步骤：
+                1. 除以 scale_ratio 还原图像预处理放大比，得到原始截图物理坐标
+                2. 调用 DPIAdapter.to_logical() 将物理坐标转换为逻辑坐标
+                   （符合层间逻辑坐标契约：感知层返回值必须为逻辑坐标）
                 """
                 cx_orig = int(cx_phys / scale_ratio)
                 cy_orig = int(cy_phys / scale_ratio)
+                # 将物理坐标转换为逻辑坐标，符合层间逻辑坐标契约
+                lx, ly = self._dpi.to_logical(cx_orig, cy_orig)
                 _DEFAULT_SIZE = 40
                 bbox: tuple[int, int, int, int] = (
-                    cx_orig - _DEFAULT_SIZE // 2,
-                    cy_orig - _DEFAULT_SIZE // 2,
+                    lx - _DEFAULT_SIZE // 2,
+                    ly - _DEFAULT_SIZE // 2,
                     _DEFAULT_SIZE,
                     _DEFAULT_SIZE,
                 )
                 logger.info(
-                    "Qwen-VL 策略：识别成功。element=%s, phys=(%d,%d) -> orig=(%d,%d), confidence=%.3f",
-                    element_description, cx_phys, cy_phys, cx_orig, cy_orig, confidence,
+                    "Qwen-VL 策略：识别成功。element=%s, phys=(%d,%d) -> orig=(%d,%d) -> logical=(%d,%d), confidence=%.3f",
+                    element_description, cx_phys, cy_phys, cx_orig, cy_orig, lx, ly, confidence,
                 )
                 return ElementResult(
                     name=element_description,
@@ -611,7 +692,7 @@ class ElementLocator:
         element_description: str,
         experience_coords: tuple[int, int] | None = None,
     ) -> ElementResult:
-        """按优先级降级链定位文本描述的 GUI 元素。
+        """按优先级降级链定位文本描述的 GUI 元素（视觉模式）。
 
         依次尝试：阿里云视觉 → Qwen-VL → Tesseract OCR → 经验坐标（若提供）。
         高优先级策略成功时立即返回，不调用后续策略。
@@ -649,6 +730,102 @@ class ElementLocator:
             return result
 
         # 策略 5：经验坐标（兜底）
+        if experience_coords is not None:
+            tried.append("experience")
+            return self._locate_by_experience(element_description, experience_coords)
+
+        raise ElementNotFoundError(
+            f"无法定位元素：{element_description!r}",
+            tried_strategies=tried,
+        )
+
+    def locate_by_text_silent(
+        self,
+        element_description: str,
+        window_title_hint: str = "",
+    ) -> ElementResult:
+        """静默模式：仅用 pywinauto 控件 API 定位，不调用视觉 API。
+
+        适用于静默安装场景，速度最快，精度最高，无 API 费用。
+        仅支持标准 Win32 窗口；不支持时抛出 ElementNotFoundError。
+
+        Args:
+            element_description: 目标按钮文字。
+            window_title_hint: 安装窗口标题关键词。
+
+        Returns:
+            识别成功的 :class:`ElementResult`（strategy="pywinauto"）。
+
+        Raises:
+            ElementNotFoundError: pywinauto 不可用或未找到按钮时抛出。
+        """
+        result = self._locate_by_pywinauto(element_description, window_title_hint)
+        if result is not None:
+            return result
+        raise ElementNotFoundError(
+            f"静默模式：无法通过控件 API 定位元素 {element_description!r}",
+            tried_strategies=["pywinauto"],
+        )
+
+    def locate_by_text_visual_with_fallback(
+        self,
+        screenshot: np.ndarray,
+        element_description: str,
+        window_title_hint: str = "",
+        experience_coords: tuple[int, int] | None = None,
+    ) -> ElementResult:
+        """视觉优先 + pywinauto 兜底模式（展示模式）。
+
+        流程：
+        1. 先尝试纯视觉（Qwen-VL / OCR）
+        2. 视觉失败时，用 pywinauto 获取精确坐标，strategy 标记为 "pywinauto_fallback"
+        3. 全部失败时抛出 ElementNotFoundError
+
+        Args:
+            screenshot: 当前屏幕截图，BGR numpy 数组。
+            element_description: 目标按钮文字。
+            window_title_hint: 安装窗口标题关键词（用于 pywinauto 兜底）。
+            experience_coords: 最终兜底坐标。
+
+        Returns:
+            识别成功的 :class:`ElementResult`。
+
+        Raises:
+            ElementNotFoundError: 所有策略均失败时抛出。
+        """
+        tried: list[str] = []
+
+        # 阶段1：纯视觉
+        tried.append("aliyun_vision")
+        result = self._locate_by_aliyun_vision(screenshot, element_description)
+        if result is not None:
+            return result
+
+        tried.append("qwen_vl")
+        result = self._locate_by_qwen_vl(screenshot, element_description)
+        if result is not None:
+            return result
+
+        tried.append("ocr")
+        result = self._locate_by_ocr(screenshot, element_description)
+        if result is not None:
+            return result
+
+        # 阶段2：pywinauto 兜底（坐标精确，但 strategy 标记为 fallback 供 UI 区分显示）
+        tried.append("pywinauto_fallback")
+        pw_result = self._locate_by_pywinauto(element_description, window_title_hint)
+        if pw_result is not None:
+            logger.info(
+                "视觉降级到 pywinauto：element=%s, bbox=%s",
+                element_description, pw_result.bbox,
+            )
+            return ElementResult(
+                name=pw_result.name,
+                bbox=pw_result.bbox,
+                confidence=pw_result.confidence,
+                strategy="pywinauto_fallback",
+            )
+
         if experience_coords is not None:
             tried.append("experience")
             return self._locate_by_experience(element_description, experience_coords)

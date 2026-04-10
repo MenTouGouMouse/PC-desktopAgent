@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import shutil
 import threading
-import time
 import tkinter
 import tkinter.messagebox
 from collections.abc import Callable
@@ -436,7 +435,6 @@ def run_file_organizer(
             try:
                 import subprocess as _sp  # noqa: PLC0415
                 import time as _t  # noqa: PLC0415
-                import mss as _mss  # noqa: PLC0415
                 from perception.screen_capturer import ScreenCapturer  # noqa: PLC0415
                 _sp.Popen(f'explorer.exe "{source}"', shell=True)  # noqa: S602
                 _t.sleep(2.0)  # 等待 Explorer 打开并渲染完成
@@ -463,7 +461,7 @@ def run_file_organizer(
                 if _exp_rect is not None:
                     # 截取 Explorer 窗口精确区域
                     lx, ly, lw, lh = _exp_rect
-                    _vl_screenshot = _capturer2.capture_region(lx, ly, lw, lh)
+                    _vl_screenshot = _capturer2.capture_region_abs(lx, ly, lw, lh)
                 else:
                     _vl_screenshot = _capturer2.capture_full()
                 logger.info("vision_first: explorer_path 截图完成 shape=%s", _vl_screenshot.shape)
@@ -516,21 +514,11 @@ def run_file_organizer(
     except Exception as exc:
         logger.warning("vision_first: 打开 Explorer 失败: %s，将跳过坐标定位", exc)
 
-    action_engine = ActionEngine()  # noqa: PLC0415
     vision_processed = 0       # 成功移动的文件数
     files_handled = 0          # 已处理（移动+拦截+失败）的文件数，用于进度计算
     failed_files: list[Path] = []
     # 低置信度文件列表：(文件路径, 置信度)，门控开启时收集，最后统一弹窗确认
     low_conf_files: list[tuple[Path, float]] = []
-
-    # 预先读取 DPI scale（只读一次）
-    _dpi_scale: float = 1.0
-    if detection_cache is not None:
-        try:
-            from perception.dpi_adapter import DPIAdapter  # noqa: PLC0415
-            _dpi_scale = DPIAdapter().scale_factor
-        except Exception:
-            pass
 
     for file in files:
         if stop_event.is_set():
@@ -632,10 +620,10 @@ def run_file_organizer(
                 if detection_cache is not None:
                     detection_cache.update([BoundingBoxDict(
                         bbox=[
-                            int(round(rect.left * _dpi_scale)),
-                            int(round(rect.top * _dpi_scale)),
-                            int(round(rect.right * _dpi_scale)),
-                            int(round(rect.bottom * _dpi_scale)),
+                            int(rect.left),
+                            int(rect.top),
+                            int(rect.right),
+                            int(rect.bottom),
                         ],
                         label=file.name,   # 真实文件名，供任务上下文匹配
                         confidence=file_confidence,

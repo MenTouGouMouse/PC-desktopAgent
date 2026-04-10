@@ -1,4 +1,4 @@
-"""视觉文件定位模块：截图 + 模板匹配 + OCR，识别桌面文件图标并返回逻辑坐标结果。
+"""视觉文件定位模块：截图 + 模板匹配 + OCR，识别桌面文件图标并返回物理像素坐标结果。
 
 本模块提供 FileIconResult 数据结构和 VisionFileLocator 类，
 作为 FileOrganizer 视觉优先模式的感知层组件。
@@ -12,7 +12,6 @@ from statistics import mean
 
 import cv2
 import numpy as np
-import pyautogui
 import pytesseract
 import yaml
 
@@ -37,8 +36,8 @@ class FileIconResult:
 
     Attributes:
         name: OCR 识别的文件名；置信度不足时为 None。
-        bbox: 图标边界框 (x, y, width, height)，逻辑坐标。
-        center: 图标中心点 (cx, cy)，逻辑坐标；由 __post_init__ 根据 bbox 自动计算。
+        bbox: 图标边界框 (x, y, width, height)，物理像素坐标。
+        center: 图标中心点 (cx, cy)，物理像素坐标；由 __post_init__ 根据 bbox 自动计算。
         ocr_confidence: OCR 置信度，范围 0.0～100.0；name 为 None 时仍保留原始值。
         source_path: 对应的源文件路径（由 FileOrganizer 在匹配后填充）。
     """
@@ -85,7 +84,7 @@ def _preprocess_for_ocr(image: np.ndarray) -> np.ndarray:
 
 
 class VisionFileLocator:
-    """视觉文件定位器：截图 + 模板匹配 + OCR，识别桌面文件图标并返回逻辑坐标结果。
+    """视觉文件定位器：截图 + 模板匹配 + OCR，识别桌面文件图标并返回物理像素坐标结果。
 
     从 config/settings.yaml 的 vision 块读取默认配置，支持构造参数覆盖。
     物理像素坐标通过 DPIAdapter 转换为逻辑坐标后填入 FileIconResult。
@@ -250,18 +249,21 @@ class VisionFileLocator:
         """截取指定区域，定位文件图标并识别文件名。
 
         Args:
-            region: (x, y, width, height) 逻辑坐标，指定截图区域。
+            region: (x, y, width, height) 物理像素坐标（相对于指定显示器）。
             monitor_index: 目标显示器索引（0-based）。
 
         Returns:
-            识别到的文件图标结果列表，坐标均为逻辑坐标。
+            识别到的文件图标结果列表，坐标均为物理像素坐标（全局绝对坐标）。
 
         Raises:
-            ValueError: region 坐标超出屏幕逻辑分辨率范围，或任意值为负数。
+            ValueError: region 坐标超出屏幕分辨率范围，或任意值为负数。
             Exception: mss 截图失败时向上重新抛出。
         """
-        # Validate region against screen logical size
-        sw, sh = pyautogui.size()
+        monitors = self._capturer.get_monitor_info()
+        if monitor_index < 0 or monitor_index >= len(monitors):
+            raise ValueError(f"monitor_index={monitor_index} 无效（可用范围 0-{len(monitors) - 1}）")
+        mon = monitors[monitor_index]
+        sw, sh = int(mon["width"]), int(mon["height"])
         rx, ry, rw, rh = region
 
         if rx < 0:
@@ -283,12 +285,12 @@ class VisionFileLocator:
         if rx + rw > sw:
             raise ValueError(
                 f"region 右边界 {rx + rw}（x={rx}, width={rw}）超出屏幕宽度 {sw}"
-                f"（屏幕逻辑尺寸: {sw}×{sh}）"
+                f"（屏幕尺寸: {sw}×{sh}）"
             )
         if ry + rh > sh:
             raise ValueError(
                 f"region 下边界 {ry + rh}（y={ry}, height={rh}）超出屏幕高度 {sh}"
-                f"（屏幕逻辑尺寸: {sw}×{sh}）"
+                f"（屏幕尺寸: {sw}×{sh}）"
             )
 
         # Capture screenshot — re-raise on failure
@@ -315,20 +317,11 @@ class VisionFileLocator:
             icon_rects = self._detect_icons_contour(screenshot)
 
         results: list[FileIconResult] = []
-        scale = self._dpi.scale_factor
-
         for ix, iy, iw, ih in icon_rects:
-            # Convert physical pixel coords (relative to screenshot) to logical coords
-            # The screenshot top-left corresponds to region (rx, ry) in logical coords.
-            # Physical coords within screenshot: (ix, iy)
-            # Physical absolute: (ix + rx * scale, iy + ry * scale) — but capture_region
-            # already captures the physical pixels starting at the logical region offset.
-            # DPIAdapter.to_logical expects absolute physical coords.
-            phys_abs_x = ix + round(rx * scale)
-            phys_abs_y = iy + round(ry * scale)
-            lx, ly = self._dpi.to_logical(phys_abs_x, phys_abs_y, monitor_index)
-            lw = max(1, round(iw / scale))
-            lh = max(1, round(ih / scale))
+            abs_x = int(mon["left"]) + rx + ix
+            abs_y = int(mon["top"]) + ry + iy
+            lw = int(iw)
+            lh = int(ih)
 
             # Extract OCR region: area below the icon in physical pixel space
             ocr_y_start = iy + ih
@@ -359,12 +352,12 @@ class VisionFileLocator:
                     name = raw_name
                     logger.info(
                         "识别文件: name=%r bbox=(%d,%d,%d,%d) ocr_confidence=%.1f",
-                        name, lx, ly, lw, lh, conf,
+                        name, abs_x, abs_y, lw, lh, conf,
                     )
 
             result = FileIconResult(
                 name=name,
-                bbox=(lx, ly, lw, lh),
+                bbox=(abs_x, abs_y, lw, lh),
                 ocr_confidence=conf,
             )
             results.append(result)

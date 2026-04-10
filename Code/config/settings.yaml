@@ -62,3 +62,15 @@ vision_box:
   color: "red" # 保留字段，当前由 confidence_threshold 决定颜色
   show_confidence: true # false 时标签仅显示 label，不含置信度数值
   confidence_threshold: 0.5 # 高/低置信度颜色分界线
+
+# 视觉诊断开关（调试用）
+# 设为 true 后，智能安装启动时会在后台对关键按钮执行 Qwen-VL 识别，
+# 生成带红框标注的截图到 debug/ 目录，不影响安装主流程。
+# 也可通过环境变量 DEBUG_VISION=true 覆盖此设置。
+debug_vision: false
+
+# 安装模式
+# - silent：静默模式，pywinauto 控件 API 直接定位，无视觉 API 调用，速度最快
+# - visual：纯视觉模式，Qwen-VL/OCR 定位，失败不降级（适合演示纯视觉能力）
+# - visual_with_fallback：视觉优先，失败自动降级到 pywinauto，始终展示识别框（默认推荐）
+install_mode: "visual_with_fallback"

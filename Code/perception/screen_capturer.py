@@ -68,7 +68,7 @@ class ScreenCapturer:
     ) -> np.ndarray:
         """区域截图，返回 BGR numpy 数组。
 
-        坐标相对于指定显示器的左上角（逻辑坐标）。
+        坐标相对于指定显示器的左上角（物理像素坐标）。
 
         Args:
             x: 区域左上角 x 坐标（相对于目标显示器）。
@@ -96,6 +96,29 @@ class ScreenCapturer:
             logger.debug(
                 "capture_region: monitor=%d region=(%d,%d,%d,%d) shape=%s",
                 monitor_index, x, y, width, height, frame.shape,
+            )
+            return frame
+
+    def capture_region_abs(
+        self,
+        left: int,
+        top: int,
+        width: int,
+        height: int,
+    ) -> np.ndarray:
+        """绝对坐标区域截图，返回 BGR numpy 数组。"""
+        with mss.mss() as sct:
+            region = {
+                "left": left,
+                "top": top,
+                "width": width,
+                "height": height,
+            }
+            screenshot = sct.grab(region)
+            frame = np.array(screenshot)[:, :, :3]
+            logger.debug(
+                "capture_region_abs: region=(%d,%d,%d,%d) shape=%s",
+                left, top, width, height, frame.shape,
             )
             return frame
 

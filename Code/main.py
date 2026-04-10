@@ -8,11 +8,27 @@
 """
 from __future__ import annotations
 
+import ctypes
 import logging
 import multiprocessing
 import sys
 from datetime import datetime, timezone
 from multiprocessing import Process, Queue
+
+
+def _set_dpi_awareness() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # type: ignore[attr-defined]
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
+_set_dpi_awareness()
 
 from config.config_loader import ConfigMissingError, load_config
 from ui.gradio_app import build_app

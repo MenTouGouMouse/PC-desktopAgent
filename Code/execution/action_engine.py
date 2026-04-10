@@ -13,10 +13,12 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes as wintypes
 import logging
 import math
 import random
 import subprocess
+import sys
 import time
 from typing import Literal
 
@@ -27,6 +29,8 @@ from execution.retry_handler import with_retry
 from perception.dpi_adapter import DPIAdapter
 
 logger = logging.getLogger(__name__)
+
+_ULONG_PTR = getattr(wintypes, "ULONG_PTR", wintypes.WPARAM)
 
 # 禁用 pyautogui 的 fail-safe 和额外延迟
 pyautogui.FAILSAFE = False
@@ -87,7 +91,9 @@ def _generate_path(
     Returns:
         轨迹点列表，每个元素为整数坐标 (x, y)。
     """
-    sw, sh = _get_screen_size()
+    left, top, sw, sh = _get_virtual_screen_rect()
+    right = left + sw - 1
+    bottom = top + sh - 1
     dx = end[0] - start[0]
     dy = end[1] - start[1]
     dist = math.hypot(dx, dy)
@@ -122,8 +128,8 @@ def _generate_path(
         jitter_x = random.uniform(-1.0, 1.0) * jitter_scale
         jitter_y = random.uniform(-1.0, 1.0) * jitter_scale
         # 钳制到屏幕范围，防止 SetCursorPos 静默截断
-        px = int(max(0, min(bx + jitter_x, sw - 1)))
-        py = int(max(0, min(by + jitter_y, sh - 1)))
+        px = int(max(left, min(bx + jitter_x, right)))
+        py = int(max(top, min(by + jitter_y, bottom)))
         points.append((px, py))
 
     # 最后一个点强制精确到终点
@@ -142,20 +148,14 @@ def human_like_move(target_x: int, target_y: int) -> None:
     target_x/target_y 是 mss 物理像素坐标。
     内部自动读取 DPI scale 和 awareness，转换为 pyautogui 期望的坐标系。
     """
-    scale = _get_dpi_scale()
-    awareness = _get_awareness()
-
-    # 当前鼠标位置（pyautogui 坐标系）→ 还原为物理坐标用于路径计算
-    cur = pyautogui.position()
-    cur_phys_x, cur_phys_y = _logical_to_phys(cur.x, cur.y, scale, awareness)
+    cur_phys_x, cur_phys_y = _get_cursor_pos()
 
     start = (float(cur_phys_x), float(cur_phys_y))
     end = (float(target_x), float(target_y))
     dist = math.hypot(end[0] - start[0], end[1] - start[1])
 
     if dist < 5:
-        lx, ly = _phys_to_logical(target_x, target_y, scale, awareness)
-        pyautogui.moveTo(lx, ly)
+        _send_move(target_x, target_y)
         return
 
     total_time = max(0.15, min(0.5, dist / 2000))
@@ -165,8 +165,7 @@ def human_like_move(target_x: int, target_y: int) -> None:
     hesitated = False
 
     for i, (px, py) in enumerate(path):
-        lx, ly = _phys_to_logical(px, py, scale, awareness)
-        pyautogui.moveTo(lx, ly)
+        _send_move(px, py)
 
         if not hesitated and i >= hesitate_idx:
             time.sleep(random.uniform(0.02, 0.06))
@@ -188,15 +187,23 @@ class CoordinateOutOfBoundsError(Exception):
     """目标坐标超出屏幕边界时抛出。"""
 
 
-def _get_screen_size() -> tuple[int, int]:
-    """返回主屏幕的物理像素尺寸 (width, height)。
+def _get_virtual_screen_rect() -> tuple[int, int, int, int]:
+    if sys.platform == "win32":
+        try:
+            user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+            left = int(user32.GetSystemMetrics(76))
+            top = int(user32.GetSystemMetrics(77))
+            width = int(user32.GetSystemMetrics(78))
+            height = int(user32.GetSystemMetrics(79))
+            if width > 0 and height > 0:
+                return left, top, width, height
+        except Exception:
+            pass
 
-    用 mss 读取，与截图坐标系一致。
-    """
     import mss as _mss
     with _mss.mss() as sct:
-        m = sct.monitors[1]
-        return m["width"], m["height"]
+        m = sct.monitors[0]
+        return int(m["left"]), int(m["top"]), int(m["width"]), int(m["height"])
 
 
 def _get_dpi_scale() -> float:
@@ -274,8 +281,119 @@ def _logical_to_phys(lx: int, ly: int, scale: float, awareness: int) -> tuple[in
 
 def _is_in_bounds(x: int, y: int) -> bool:
     """检查物理像素坐标是否在主屏幕范围内。"""
-    w, h = _get_screen_size()
-    return 0 <= x < w and 0 <= y < h
+    left, top, w, h = _get_virtual_screen_rect()
+    return left <= x < left + w and top <= y < top + h
+
+
+def _clamp_to_virtual_screen(x: int, y: int) -> tuple[int, int]:
+    left, top, w, h = _get_virtual_screen_rect()
+    right = left + w - 1
+    bottom = top + h - 1
+    return max(left, min(x, right)), max(top, min(y, bottom))
+
+
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+
+def _get_cursor_pos() -> tuple[int, int]:
+    if sys.platform != "win32":
+        p = pyautogui.position()
+        return int(p.x), int(p.y)
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    pt = _POINT()
+    user32.GetCursorPos(ctypes.byref(pt))
+    return int(pt.x), int(pt.y)
+
+
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", _ULONG_PTR),
+    ]
+
+
+class _INPUT(ctypes.Structure):
+    _fields_ = [("type", wintypes.DWORD), ("mi", _MOUSEINPUT)]
+
+
+_INPUT_MOUSE = 0
+_MOUSEEVENTF_MOVE = 0x0001
+_MOUSEEVENTF_LEFTDOWN = 0x0002
+_MOUSEEVENTF_LEFTUP = 0x0004
+_MOUSEEVENTF_RIGHTDOWN = 0x0008
+_MOUSEEVENTF_RIGHTUP = 0x0010
+_MOUSEEVENTF_ABSOLUTE = 0x8000
+_MOUSEEVENTF_VIRTUALDESK = 0x4000
+
+
+def _to_absolute(x: int, y: int) -> tuple[int, int]:
+    left, top, w, h = _get_virtual_screen_rect()
+    if w <= 1 or h <= 1:
+        return 0, 0
+    ax = int(round((x - left) * 65535 / (w - 1)))
+    ay = int(round((y - top) * 65535 / (h - 1)))
+    return max(0, min(ax, 65535)), max(0, min(ay, 65535))
+
+
+def _send_inputs(inputs: list[_INPUT]) -> None:
+    if sys.platform != "win32":
+        return
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    arr = (_INPUT * len(inputs))(*inputs)
+    sent = user32.SendInput(len(inputs), arr, ctypes.sizeof(_INPUT))
+    if sent != len(inputs):
+        raise OSError(ctypes.get_last_error())
+
+
+def _send_move(x: int, y: int) -> None:
+    x, y = _clamp_to_virtual_screen(x, y)
+    if sys.platform != "win32":
+        pyautogui.moveTo(x, y)
+        return
+    ax, ay = _to_absolute(x, y)
+    inp = _INPUT(
+        type=_INPUT_MOUSE,
+        mi=_MOUSEINPUT(
+            dx=ax,
+            dy=ay,
+            mouseData=0,
+            dwFlags=_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE | _MOUSEEVENTF_VIRTUALDESK,
+            time=0,
+            dwExtraInfo=0,
+        ),
+    )
+    _send_inputs([inp])
+
+
+def _send_click(click_type: Literal["single", "double", "right"]) -> None:
+    if sys.platform != "win32":
+        if click_type == "right":
+            pyautogui.rightClick()
+        elif click_type == "double":
+            pyautogui.doubleClick()
+        else:
+            pyautogui.click()
+        return
+
+    if click_type == "right":
+        down_flag, up_flag = _MOUSEEVENTF_RIGHTDOWN, _MOUSEEVENTF_RIGHTUP
+        n = 1
+    else:
+        down_flag, up_flag = _MOUSEEVENTF_LEFTDOWN, _MOUSEEVENTF_LEFTUP
+        n = 2 if click_type == "double" else 1
+
+    for i in range(n):
+        _send_inputs([
+            _INPUT(type=_INPUT_MOUSE, mi=_MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=down_flag, time=0, dwExtraInfo=0)),
+            _INPUT(type=_INPUT_MOUSE, mi=_MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=up_flag, time=0, dwExtraInfo=0)),
+        ])
+        if i + 1 < n:
+            time.sleep(0.08)
 
 
 # ---------------------------------------------------------------------------
@@ -355,56 +473,58 @@ class ActionEngine:
         Returns:
             操作成功返回 True，失败返回 False。
         """
-        sw, sh = _get_screen_size()
-        # 边界钳制
-        x = max(0, min(x, sw - 1))
-        y = max(0, min(y, sh - 1))
+        x, y = _clamp_to_virtual_screen(x, y)
+        left, top, sw, sh = _get_virtual_screen_rect()
 
         t0 = time.monotonic()
-        logger.info("click: 开始 — 目标=(%d,%d) screen=%dx%d", x, y, sw, sh)
+        logger.info("click: 开始 — 逻辑目标=(%d,%d) virtual=(%d,%d,%d,%d)", x, y, left, top, sw, sh)
 
         try:
             scale = _get_dpi_scale()
             awareness = _get_awareness()
 
-            # 贝塞尔移动
-            human_like_move(x, y)
-            time.sleep(0.02)
-
-            # 验证实际位置
-            cur = pyautogui.position()
-            actual_phys_x, actual_phys_y = _logical_to_phys(cur.x, cur.y, scale, awareness)
-            deviation = math.hypot(actual_phys_x - x, actual_phys_y - y)
+            # 将逻辑坐标转换为物理坐标，human_like_move 和 _send_move 需要物理坐标
+            phys_x, phys_y = self._dpi.to_physical(x, y)
             logger.info(
-                "click: 移动耗时=%.3fs 实际物理=(%d,%d) 期望=(%d,%d) 偏差=%.0fpx scale=%.2f awareness=%d",
-                time.monotonic() - t0, actual_phys_x, actual_phys_y, x, y, deviation, scale, awareness,
+                "click: 逻辑=(%d,%d) -> 物理=(%d,%d) scale=%.2f awareness=%d",
+                x, y, phys_x, phys_y, scale, awareness,
             )
 
-            # 偏差超过 15px 时直接跳转
+            human_like_move(phys_x, phys_y)
+            time.sleep(0.02)
+
+            actual_phys_x, actual_phys_y = _get_cursor_pos()
+            deviation = math.hypot(actual_phys_x - phys_x, actual_phys_y - phys_y)
+            logger.info(
+                "click: 移动耗时=%.3fs 实际物理=(%d,%d) 期望物理=(%d,%d) 偏差=%.0fpx scale=%.2f awareness=%d",
+                time.monotonic() - t0, actual_phys_x, actual_phys_y, phys_x, phys_y, deviation, scale, awareness,
+            )
+
             if deviation > 15:
                 logger.warning("click: 偏差%.0fpx 超限，直接跳转", deviation)
-                lx, ly = _phys_to_logical(x, y, scale, awareness)
-                pyautogui.moveTo(lx, ly)
+                _send_move(phys_x, phys_y)
                 time.sleep(0.02)
+                actual_phys_x, actual_phys_y = _get_cursor_pos()
+                deviation = math.hypot(actual_phys_x - phys_x, actual_phys_y - phys_y)
+                if deviation > 15:
+                    logger.error(
+                        "click: 位置校验失败 目标物理=(%d,%d) 实际=(%d,%d) 偏差=%.0fpx",
+                        phys_x, phys_y, actual_phys_x, actual_phys_y, deviation,
+                    )
+                    return False
 
-            # 微调 ±2px（物理坐标），转换后移动
-            fine_phys_x = max(0, min(x + random.randint(-2, 2), sw - 1))
-            fine_phys_y = max(0, min(y + random.randint(-2, 2), sh - 1))
-            fine_lx, fine_ly = _phys_to_logical(fine_phys_x, fine_phys_y, scale, awareness)
-            pyautogui.moveTo(fine_lx, fine_ly)
+            fine_phys_x, fine_phys_y = _clamp_to_virtual_screen(
+                phys_x + random.randint(-2, 2),
+                phys_y + random.randint(-2, 2),
+            )
+            _send_move(fine_phys_x, fine_phys_y)
             time.sleep(0.05)
 
-            # 点击（用 pyautogui，与 moveTo 坐标系一致）
-            if click_type == "right":
-                pyautogui.rightClick()
-            elif click_type == "double":
-                pyautogui.doubleClick()
-            else:
-                pyautogui.click()
+            _send_click(click_type)
 
             time.sleep(0.15)
             logger.info(
-                "click: 完成 — 总耗时=%.3fs 目标=(%d,%d) 实际=(%d,%d) type=%s",
+                "click: 完成 — 总耗时=%.3fs 逻辑目标=(%d,%d) 物理落点=(%d,%d) type=%s",
                 time.monotonic() - t0, x, y, fine_phys_x, fine_phys_y, click_type,
             )
             return True
@@ -502,7 +622,22 @@ class ActionEngine:
             return False
         try:
             human_like_move(from_x, from_y)
-            pyautogui.dragTo(to_x, to_y, duration=duration, button="left")
+            if sys.platform == "win32":
+                _send_inputs([
+                    _INPUT(type=_INPUT_MOUSE, mi=_MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=_MOUSEEVENTF_LEFTDOWN, time=0, dwExtraInfo=0)),
+                ])
+                steps = max(1, int(duration / 0.01))
+                for i in range(1, steps + 1):
+                    t = i / steps
+                    mx = int(round(from_x + (to_x - from_x) * t))
+                    my = int(round(from_y + (to_y - from_y) * t))
+                    _send_move(mx, my)
+                    time.sleep(0.01)
+                _send_inputs([
+                    _INPUT(type=_INPUT_MOUSE, mi=_MOUSEINPUT(dx=0, dy=0, mouseData=0, dwFlags=_MOUSEEVENTF_LEFTUP, time=0, dwExtraInfo=0)),
+                ])
+            else:
+                pyautogui.dragTo(to_x, to_y, duration=duration, button="left")
             logger.info(
                 "drag: 已从 (%d, %d) 拖拽至 (%d, %d)，duration=%.2fs",
                 from_x, from_y, to_x, to_y, duration,

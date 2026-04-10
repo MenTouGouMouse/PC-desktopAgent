@@ -17,6 +17,13 @@
     </div>
 
     <button class="minimize-btn" @click="onMinimize">最小化到悬浮球</button>
+
+    <!-- 安装模式选择弹窗 -->
+    <InstallModeDialog
+      :visible="showModeDialog"
+      @confirm="onModeConfirmed"
+      @cancel="onModeCancel"
+    />
   </div>
 </template>
 
@@ -25,6 +32,7 @@ import { ref } from 'vue'
 import { usePyWebView } from '../composables/usePyWebView'
 import ProgressBar from './ProgressBar.vue'
 import LogOutput from './LogOutput.vue'
+import InstallModeDialog from './InstallModeDialog.vue'
 
 defineProps<{
   percent: number
@@ -33,19 +41,29 @@ defineProps<{
 
 const api = usePyWebView()
 const installerPending = ref(false)
+const showModeDialog = ref(false)
 
 function onFileOrganizer() {
   api.startFileOrganizer()
 }
 
-async function onSmartInstaller() {
+function onSmartInstaller() {
   if (installerPending.value) return
+  showModeDialog.value = true
+}
+
+async function onModeConfirmed(mode: 'silent' | 'visual_with_fallback') {
+  showModeDialog.value = false
   installerPending.value = true
   try {
-    await api.startSmartInstaller()
+    await api.startSmartInstaller(mode)
   } finally {
     installerPending.value = false
   }
+}
+
+function onModeCancel() {
+  showModeDialog.value = false
 }
 
 function onMinimize() {
