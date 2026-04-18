@@ -682,9 +682,8 @@ class QwenVLRecognizer:
             screenshot_bgr, window_rect
         )
 
-        # 3. 预处理（记录 scale_ratio）
+        # 3. 预处理
         processed = self._preprocess_screenshot(cropped)
-        scale_ratio_after_crop = self._scale_ratio
 
         # 4. base64 编码
         b64_url = self._encode_to_base64(processed)

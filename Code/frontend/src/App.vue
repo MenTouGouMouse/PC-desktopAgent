@@ -5,7 +5,7 @@
     </div>
     <div class="right-pane">
       <div class="control-section">
-        <ControlPanel :percent="appPercent" :is-running="appIsRunning" />
+        <ControlPanel :percent="appPercent" :is-running="appIsRunning" :status-text="appStatusText" />
       </div>
       <div class="chat-section">
         <ChatInterface />
@@ -16,7 +16,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, provide } from 'vue'
 import ScreenPreview from './components/ScreenPreview.vue'
 import ControlPanel from './components/ControlPanel.vue'
 import ChatInterface from './components/ChatInterface.vue'
@@ -24,12 +24,22 @@ import SettingsDialog from './components/SettingsDialog.vue'
 
 const appPercent = ref<number>(0)
 const appIsRunning = ref<boolean>(false)
+const appStatusText = ref<string>('')
 const settingsVisible = ref<boolean>(false)
 
+// 日志数组在 App 层管理，避免 LogOutput 子组件 onMounted 时序问题
+const appLogs = ref<string[]>([])
+provide('appLogs', appLogs)
+
 onMounted(() => {
-  ;(window as any).updateProgress = (p: number, _t: string, r: boolean) => {
+  ;(window as any).updateProgress = (p: number, t: string, r: boolean) => {
     appPercent.value = p
     appIsRunning.value = r
+    appStatusText.value = t
+  }
+  // 在 App 层注册 appendLog，确保 Python 后台线程调用时已就绪
+  ;(window as any).appendLog = (msg: string) => {
+    appLogs.value.push(msg)
   }
 })
 </script>

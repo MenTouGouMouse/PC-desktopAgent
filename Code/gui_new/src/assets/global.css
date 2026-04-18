@@ -1,0 +1,283 @@
+/* ============================================================
+   Liquid Glass Design System — v2
+   ============================================================ */
+
+:root {
+  --font: -apple-system, 'Inter', 'SF Pro Text', 'Segoe UI', 'PingFang SC', sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+
+  /* Light */
+  --bg: #eef0f6;
+  --bg-grad: radial-gradient(ellipse at 15% 10%, rgba(100,120,220,.12) 0%, transparent 55%),
+             radial-gradient(ellipse at 85% 90%, rgba(60,180,130,.09) 0%, transparent 55%),
+             #eef0f6;
+  --glass: rgba(255,255,255,.52);
+  --glass-strong: rgba(255,255,255,.75);
+  --border: rgba(0,0,0,.08);
+  --border-strong: rgba(0,0,0,.13);
+  --text: #1a1a2e;
+  --text-2: #44446a;
+  --text-muted: #7878a0;
+  --accent: #4a5bc4;
+  --accent-h: #3a4ab4;
+  --accent-dim: rgba(74,91,196,.13);
+  --accent-glow: rgba(74,91,196,.30);
+  --success: #2da870;
+  --success-dim: rgba(45,168,112,.14);
+  --danger: #c0394a;
+  --danger-dim: rgba(192,57,74,.12);
+  --warn: #d97706;
+  --warn-dim: rgba(217,119,6,.12);
+  --blur: 18px;
+  --r-card: 14px;
+  --r-btn: 10px;   /* 适度圆角，不过大 */
+  --r-sm: 8px;
+  --shadow: inset 0 1px 0 rgba(255,255,255,.65), 0 4px 18px rgba(0,0,0,.09);
+  --shadow-h: inset 0 1px 0 rgba(255,255,255,.75), 0 8px 28px rgba(0,0,0,.13);
+  --grad-btn: linear-gradient(135deg, #4a5bc4, #7b8cde);
+  /* Progress shimmer colors */
+  --prog-shimmer: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    var(--accent-h) 30%,
+    rgba(255,255,255,.55) 50%,
+    var(--accent-h) 70%,
+    var(--accent) 100%
+  );
+}
+
+html.dark {
+  --bg: #0d0d14;
+  --bg-grad: radial-gradient(ellipse at 15% 10%, rgba(123,140,222,.13) 0%, transparent 55%),
+             radial-gradient(ellipse at 85% 90%, rgba(92,206,160,.09) 0%, transparent 55%),
+             #0d0d14;
+  --glass: rgba(20,20,32,.58);
+  --glass-strong: rgba(28,28,44,.82);
+  --border: rgba(255,255,255,.10);
+  --border-strong: rgba(255,255,255,.17);
+  --text: #e8e8f0;
+  --text-2: #b0b0cc;
+  --text-muted: #7070a0;
+  --accent: #7b8cde;
+  --accent-h: #9aaaf0;
+  --accent-dim: rgba(123,140,222,.18);
+  --accent-glow: rgba(123,140,222,.35);
+  --success: #5ccea0;
+  --success-dim: rgba(92,206,160,.14);
+  --danger: #e05c6e;
+  --danger-dim: rgba(224,92,110,.12);
+  --warn: #f59e0b;
+  --warn-dim: rgba(245,158,11,.12);
+  --shadow: inset 0 1px 0 rgba(255,255,255,.07), 0 8px 32px rgba(0,0,0,.42);
+  --shadow-h: inset 0 1px 0 rgba(255,255,255,.10), 0 12px 40px rgba(0,0,0,.52);
+  --grad-btn: linear-gradient(135deg, #7b8cde, #9aaaf0);
+  --prog-shimmer: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    var(--accent-h) 30%,
+    rgba(255,255,255,.45) 50%,
+    var(--accent-h) 70%,
+    var(--accent) 100%
+  );
+}
+
+/* ── Theme transition — smooth color changes in 200ms ──────── */
+/* Only apply to non-media elements */
+*:not(img):not(video):not(canvas):not(.frame-area):not(.frame-img),
+*:not(img):not(video):not(canvas):not(.frame-area):not(.frame-img)::before,
+*:not(img):not(video):not(canvas):not(.frame-area):not(.frame-img)::after {
+  transition:
+    background-color 200ms ease,
+    border-color 200ms ease,
+    color 200ms ease,
+    box-shadow 200ms ease;
+}
+
+/* Hard override: frame area and children NEVER transition */
+.frame-area,
+.frame-area *,
+.frame-img {
+  transition: none !important;
+  animation: none !important;
+}
+
+/* ── Reset ─────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%; overflow: hidden;
+  font-family: var(--font); font-size: 14px; line-height: 1.5;
+  color: var(--text); background: var(--bg-grad);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ── Glass card ────────────────────────────────────────────── */
+.glass {
+  background: var(--glass);
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow);
+}
+
+/* ── Buttons ───────────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 7px 16px; border: none; border-radius: var(--r-btn);
+  font-family: var(--font); font-size: 13px; font-weight: 600;
+  cursor: pointer; user-select: none;
+  /* 优雅适中的过渡速率 */
+  transition: transform .18s cubic-bezier(.34,1.56,.64,1),
+              box-shadow .18s ease,
+              background .18s ease,
+              opacity .18s ease;
+  /* 静止时不启用 will-change，避免文字模糊 */
+  transform: translateZ(0);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+.btn:hover { will-change: transform; }
+.btn:not(:hover) { will-change: auto; }
+.btn:active { transform: scale(.97) translateZ(0) !important; transition-duration: .08s !important; }
+.btn:disabled { opacity: .38; cursor: not-allowed; pointer-events: none; }
+
+.btn-primary {
+  background: var(--grad-btn); color: #fff;
+  box-shadow: 0 2px 8px var(--accent-glow);
+}
+.btn-primary:hover:not(:disabled) {
+  transform: scale(1.025) translateZ(0);
+  box-shadow: 0 5px 16px var(--accent-glow);
+}
+
+.btn-ghost {
+  background: transparent; color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--accent-dim); color: var(--text);
+  border-color: var(--accent); transform: scale(1.008) translateZ(0);
+}
+
+.btn-danger {
+  background: var(--danger-dim); color: var(--danger);
+  border: 1px solid rgba(192,57,74,.28);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger); color: #fff;
+  transform: scale(1.015) translateZ(0);
+}
+
+/* ── Animations ────────────────────────────────────────────── */
+@keyframes fadeUp {
+  from { opacity:0; transform:translateY(5px) scale(.98); }
+  to   { opacity:1; transform:none; }
+}
+@keyframes blink  { 0%,80%,100% { opacity:.2; } 40% { opacity:1; } }
+@keyframes shimmer {
+  0%   { background-position: -250% center; }
+  100% { background-position:  250% center; }
+}
+@keyframes progPulse {
+  0%,100% { opacity:1; }
+  50%     { opacity:.82; }
+}
+
+/* ── Dynamic Card Layout — grid-layout-plus overrides ──────── */
+
+/* Grid item content should fill the full cell height */
+.vgl-item {
+  transition: none !important;
+}
+
+.vgl-item > * {
+  width: 100%;
+  height: 100%;
+}
+
+/* Drag placeholder — match accent color */
+.vgl-item--placeholder {
+  --vgl-placeholder-bg: var(--accent);
+  --vgl-placeholder-opacity: 15%;
+  border-radius: var(--r-card) !important;
+}
+
+/* Resize handle — subtle, matches theme */
+.vgl-item__resizer {
+  opacity: 0.4;
+  transition: opacity 0.2s ease;
+}
+
+.vgl-item:hover .vgl-item__resizer {
+  opacity: 0.8;
+}
+
+/* Dragging state — lift effect */
+.vgl-item--dragging {
+  --vgl-item-dragging-opacity: 92%;
+  filter: drop-shadow(0 12px 32px rgba(0,0,0,0.25));
+}
+
+/* Card variables (supplement existing design system) */
+:root {
+  --card-bg-light: rgba(255, 255, 255, 0.6);
+  --card-bg-dark: rgba(30, 30, 40, 0.7);
+  --card-border-light: rgba(255, 255, 255, 0.15);
+  --card-border-dark: rgba(255, 255, 255, 0.08);
+  --card-radius: 18px;
+  --card-shadow: 0 4px 16px rgba(0, 0, 0, 0.08), 0 1px 4px rgba(0, 0, 0, 0.04);
+  --card-shadow-hover: 0 8px 32px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+html.dark {
+  --card-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), 0 1px 4px rgba(0, 0, 0, 0.2);
+  --card-shadow-hover: 0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+/* ── Ripple & Pulse Effects ────────────────────────────────── */
+@keyframes ripple {
+  from { transform: scale(0); opacity: 0.6; }
+  to   { transform: scale(1); opacity: 0; }
+}
+
+@keyframes globalPulse {
+  0%   { filter: brightness(1); }
+  40%  { filter: brightness(1.02); }
+  100% { filter: brightness(1); }
+}
+
+.ripple-wave {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  will-change: transform;
+  background: radial-gradient(circle, rgba(74,91,196,0.18) 0%, rgba(74,91,196,0) 70%);
+}
+
+html.dark .ripple-wave {
+  background: radial-gradient(circle, rgba(123,140,222,0.22) 0%, rgba(123,140,222,0) 70%);
+}
+
+.ripple-animate {
+  animation: ripple 500ms ease-out forwards;
+}
+
+.pulse-active {
+  animation: globalPulse 200ms ease-out forwards;
+}
+
+.vgl-item--dragging .dynamic-card { transition: none !important; }
+
+/* ── Perimeter progress CSS property ──────────────────────── */
+@property --perim-pct {
+  syntax: '<percentage>';
+  initial-value: 0%;
+  inherits: false;
+}

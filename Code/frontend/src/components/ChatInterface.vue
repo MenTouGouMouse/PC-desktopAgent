@@ -65,46 +65,35 @@ const messagesEl = ref<HTMLElement | null>(null)
 
 const { chatWithAgent, resolveConfirmation } = usePyWebView()
 
-/**
- * Highlight_Renderer: transforms plain text into HTML with semantic highlights.
- * Priority order: file paths → success keywords → error keywords → numbers+units → **bold**
- */
 function highlightContent(text: string): string {
-  // Escape HTML to prevent XSS before applying highlights
   const escaped = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
 
-  // Track whether any rule matched
   let result = escaped
 
-  // 1. File paths: starts with / or \, or contains common installer/archive extensions
   result = result.replace(
     /((?:[A-Za-z]:)?[/\\][^\s<>"]*|[^\s<>"]*\.(?:exe|zip|msi|dmg|tar|gz|pkg|deb|rpm))/g,
     '<span style="color:var(--accent-cyan);font-family:monospace">$1</span>'
   )
 
-  // 2. Success keywords
   result = result.replace(
     /(整理完成|安装成功|已完成|完成|成功)/g,
     '<span style="color:var(--accent-green);font-weight:600">$1</span>'
   )
 
-  // 3. Error/warning keywords
   result = result.replace(
     /(超时|拒绝|失败|错误|异常|警告)/g,
     '<span style="color:#ff4d6d;font-weight:600">$1</span>'
   )
 
-  // 4. Numbers + units (highlight only the numeric part)
   result = result.replace(
     /(\d+(?:\.\d+)?)(\s*(?:%|个|秒|分钟|小时|MB|GB|KB|ms|px|次|条|行|项))/g,
     '<span style="color:var(--accent-cyan);font-weight:600">$1</span>$2'
   )
 
-  // 5. **bold** markdown
   result = result.replace(
     /\*\*([^*]+)\*\*/g,
     '<span style="font-weight:600">$1</span>'
@@ -151,7 +140,6 @@ async function resolveConfirm(msg: ChatMessage, answer: boolean): Promise<void> 
 }
 
 onMounted(() => {
-  // Expose global functions for Python evaluate_js calls
   ;(window as any).appendChatMessage = (role: 'user' | 'assistant' | 'system', content: string) => {
     isThinking.value = false
     appendMessage(role, content)
@@ -237,7 +225,6 @@ onMounted(() => {
   text-align: center;
 }
 
-/* Thinking animation */
 .thinking {
   display: flex;
   align-items: center;
@@ -253,20 +240,14 @@ onMounted(() => {
   animation: blink 1.2s infinite;
 }
 
-.dot:nth-child(2) {
-  animation-delay: 0.4s;
-}
-
-.dot:nth-child(3) {
-  animation-delay: 0.8s;
-}
+.dot:nth-child(2) { animation-delay: 0.4s; }
+.dot:nth-child(3) { animation-delay: 0.8s; }
 
 @keyframes blink {
   0%, 80%, 100% { opacity: 0.2; }
   40% { opacity: 1; }
 }
 
-/* Input area */
 .chat-input-area {
   display: flex;
   gap: 8px;
@@ -323,7 +304,6 @@ onMounted(() => {
   cursor: not-allowed;
 }
 
-/* Confirm message bubble */
 .bubble--confirm {
   background: rgba(245, 158, 11, 0.1);
   border: 1px solid rgba(245, 158, 11, 0.4);
@@ -333,7 +313,6 @@ onMounted(() => {
   max-width: 90%;
 }
 
-/* Confirm yes/no action row */
 .confirm-actions {
   display: flex;
   gap: 8px;

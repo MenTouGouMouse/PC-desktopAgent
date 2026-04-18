@@ -5,7 +5,7 @@
 ## 核心能力
 
 - 自然语言指令解析（Qwen3.5-Plus / DashScope API）
-- 多级 GUI 元素定位，带优先级降级：pywinauto Win32 控件 API → 阿里云 GUI-Plus → Qwen3-VL（OpenAI 兼容接口）→ Tesseract OCR → OpenCV 模板匹配 → 经验坐标偏移
+- 多级 GUI 元素定位，带优先级降级：本地 YOLOv8 GUI 检测（`models/gui_detector.pt`，离线最快，模型文件不存在时自动跳过）→ pywinauto Win32 控件 API → 阿里云 GUI-Plus → Qwen3-VL（OpenAI 兼容接口）→ Tesseract OCR → OpenCV 模板匹配 → 经验坐标偏移
 - 鼠标/键盘模拟（自动检测进程 DPI awareness：通过 `GetProcessDpiAwareness` 读取 awareness 级别，Per-Monitor Aware（≥2）时 `pyautogui.moveTo` 直接使用物理坐标；UNAWARE/SYSTEM_AWARE 时将物理坐标除以 scale 转换为逻辑坐标后传入；awareness 和 scale 在模块级缓存，避免每次点击重复读取；屏幕尺寸边界检查基于 `mss` 物理像素；鼠标移动使用三次贝塞尔曲线生成拟人化轨迹，带随机控制点、ease-out 速度曲线和微抖动；点击前先 `moveTo` 到目标位置并等待 100ms，点击后等待 200ms；支持中文输入）
 - 任务流程录制（pynput）与回放（JSON 模板）
 - Gradio Web UI，实时屏幕预览

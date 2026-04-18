@@ -10,6 +10,7 @@ automation.software_installer — 真实智能安装执行器。
 """
 from __future__ import annotations
 
+import base64
 import ctypes
 import ctypes.wintypes
 import logging
@@ -22,6 +23,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+
+import cv2
+import numpy as np
 
 if TYPE_CHECKING:
     from automation.object_detector import DetectionCache
@@ -225,9 +229,6 @@ def _activate_installer_window(window_hint: str = "") -> tuple[int, int, int, in
     keywords = [k for k in keywords if k]
 
     # 枚举所有顶层窗口，找到标题包含关键词的
-    found_hwnd = None
-    found_title = ""
-
     EnumWindowsProc = _ctypes.WINFUNCTYPE(_ctypes.c_bool, _ctypes.c_ulong, _ctypes.c_long)
     hwnds: list[int] = []
 
@@ -355,7 +356,6 @@ def run_software_installer(
     from execution.action_engine import ActionEngine
     from perception.element_locator import ElementLocator
     from perception.screen_capturer import ScreenCapturer
-    from automation.object_detector import DetectionCache as _DetectionCache  # noqa: F401
     from automation.vision_box_drawer import BoundingBoxDict
 
     pkg = normalize_path(package_path)
@@ -379,9 +379,10 @@ def run_software_installer(
         logger.warning(msg)
         progress_callback(msg, 0)
 
-    # 等待安装程序窗口渲染完成（通常需要 2-5 秒）
-    logger.info("等待安装程序窗口出现（5秒）...")
-    time.sleep(5)
+    # 等待安装程序窗口渲染完成
+    logger.info("等待安装程序窗口出现（2秒）...")
+    progress_callback("等待安装界面加载…", 0)
+    time.sleep(2)
 
     # 视觉诊断（DEBUG_VISION=true 时在后台线程中执行，不阻塞安装流程）
     try:
@@ -391,161 +392,315 @@ def run_software_installer(
     except Exception as _diag_exc:  # noqa: BLE001
         logger.debug("视觉诊断启动失败（不影响安装）：%s", _diag_exc)
 
-    logger.info("安装模式：%s", install_mode)
+    logger.info("安装模式：%s（GUI-Plus 自主模式）", install_mode)
 
-    total = len(INSTALL_STEPS)
+    # ── GUI-Plus 自主 ReAct 循环 ────────────────────────────────────────
+    # 不再使用固定步骤列表，由 GUI-Plus 自己截图、分析界面、决定操作，
+    # 循环执行直到模型返回 terminate（安装完成）或超时/停止信号。
+    # ──────────────────────────────────────────────────────────────────
+    import json as _json
+    import math as _math
+    import re as _re
+    from pathlib import Path as _Path
+    from dotenv import load_dotenv as _load_dotenv
+    from openai import OpenAI as _OpenAI
+
+    # 确保 API key 已加载
+    _load_dotenv(dotenv_path=_Path(__file__).parent.parent / "config" / ".env", override=False)
+    api_key = os.environ.get("DASHSCOPE_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("DASHSCOPE_API_KEY 未配置，无法使用 GUI-Plus 自主安装模式")
+
+    # GUI-Plus 官方推荐 system prompt（电脑端完整版）
+    _SYSTEM_PROMPT = (
+        "# Tools\n\nYou may call one or more functions to assist with the user query.\n\n"
+        "You are provided with function signatures within <tools></tools> XML tags:\n"
+        "<tools>\n"
+        '{"type": "function", "function": {"name": "computer_use", "description": '
+        '"Use a mouse and keyboard to interact with a computer, and take screenshots.\\n'
+        "* This is an interface to a desktop GUI. You do not have access to a terminal or applications menu. "
+        "You must click on desktop icons to start applications.\\n"
+        "* Some applications may take time to start or process actions, so you may need to wait and take "
+        "successive screenshots to see the results of your actions.\\n"
+        "* The screen's resolution is 1000x1000.\\n"
+        '* Make sure to click any buttons, links, icons, etc with the cursor tip in the center of the element. '
+        "Don\\'t click boxes on their edges unless asked.\", "
+        '"parameters": {"properties": {'
+        '"action": {"description": "The action to perform. The available actions are:\\n'
+        "* `key`: Performs key down presses on the arguments passed in order, then performs key releases in reverse order.\\n"
+        "* `type`: Type a string of text on the keyboard.\\n"
+        "* `mouse_move`: Move the cursor to a specified (x, y) pixel coordinate on the screen.\\n"
+        "* `left_click`: Click the left mouse button at a specified (x, y) pixel coordinate on the screen.\\n"
+        "* `left_click_drag`: Click and drag the cursor to a specified (x, y) pixel coordinate on the screen.\\n"
+        "* `right_click`: Click the right mouse button at a specified (x, y) pixel coordinate on the screen.\\n"
+        "* `double_click`: Double-click the left mouse button at a specified (x, y) pixel coordinate on the screen.\\n"
+        "* `scroll`: Performs a scroll of the mouse scroll wheel.\\n"
+        "* `wait`: Wait specified seconds for the change to happen.\\n"
+        '* `terminate`: Terminate the current task and report its completion status.", '
+        '"enum": ["key", "type", "mouse_move", "left_click", "left_click_drag", "right_click", '
+        '"double_click", "scroll", "wait", "terminate"], "type": "string"}, '
+        '"coordinate": {"description": "(x, y): The x (pixels from the left edge) and y (pixels from the top edge) '
+        "coordinates to move the mouse to. Required only by `action=mouse_move` and `action=left_click_drag`.\", "
+        '"type": "array"}, '
+        '"keys": {"description": "Required only by `action=key`.", "type": "array"}, '
+        '"text": {"description": "Required only by `action=type`.", "type": "string"}, '
+        '"pixels": {"description": "The amount of scrolling to perform. Positive values scroll up, negative values scroll down. '
+        'Required only by `action=scroll`.", "type": "number"}, '
+        '"time": {"description": "The seconds to wait. Required only by `action=wait`.", "type": "number"}, '
+        '"status": {"description": "The status of the task. Required only by `action=terminate`.", '
+        '"type": "string", "enum": ["success", "failure"]}}, '
+        '"required": ["action"], "type": "object"}}}\n'
+        "</tools>\n\n"
+        "For each function call, return a json object with function name and arguments within "
+        "<tool_call></tool_call> XML tags:\n"
+        "<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>\n\n"
+        "# Response format\n\n"
+        "Response format for every step:\n"
+        "1) Action: a short imperative describing what to do in the UI.\n"
+        "2) A single <tool_call>...</tool_call> block containing only the JSON.\n\n"
+        "Rules:\n"
+        "- Output exactly in the order: Action, <tool_call>.\n"
+        "- Be brief: one line for Action.\n"
+        "- Do not output anything else outside those two parts.\n"
+        "- If finishing, use action=terminate in the tool call."
+    )
+
+    def _smart_resize(height: int, width: int) -> tuple[int, int]:
+        """计算 GUI-Plus 模型内部 resize 后的图像尺寸（官方参数）。"""
+        factor = 32
+        min_pixels = 3136
+        max_pixels = 1_003_520
+
+        def _round(n: int) -> int:
+            return round(n / factor) * factor
+
+        def _floor(n: float) -> int:
+            return _math.floor(n / factor) * factor
+
+        def _ceil(n: float) -> int:
+            return _math.ceil(n / factor) * factor
+
+        h_bar, w_bar = _round(height), _round(width)
+        if h_bar * w_bar > max_pixels:
+            beta = _math.sqrt((height * width) / max_pixels)
+            h_bar, w_bar = _floor(height / beta), _floor(width / beta)
+        elif h_bar * w_bar < min_pixels:
+            beta = _math.sqrt(min_pixels / (height * width))
+            h_bar, w_bar = _ceil(height * beta), _ceil(width * beta)
+        return h_bar, w_bar
+
+    def _screenshot_to_b64(frame: np.ndarray) -> str:
+        success, buf = cv2.imencode(".png", frame)
+        if not success:
+            raise RuntimeError("截图编码失败")
+        return base64.b64encode(buf.tobytes()).decode("utf-8")
+
+    def _execute_action(args: dict, screenshot: "np.ndarray") -> None:
+        """解析 GUI-Plus 返回的 action 并通过 action_engine 执行。"""
+        action = args.get("action", "")
+        coord = args.get("coordinate")
+        h_img, w_img = screenshot.shape[:2]
+
+        if coord and len(coord) >= 2:
+            # 归一化坐标（0-1000）→ 原始图像像素坐标
+            cx = int(float(coord[0]) / 1000.0 * w_img)
+            cy = int(float(coord[1]) / 1000.0 * h_img)
+        else:
+            cx, cy = 0, 0
+
+        if action == "left_click":
+            action_engine.click(cx, cy, click_type="single")
+            logger.info("GUI-Plus 执行 left_click (%d,%d)", cx, cy)
+        elif action == "double_click":
+            action_engine.click(cx, cy, click_type="double")
+            logger.info("GUI-Plus 执行 double_click (%d,%d)", cx, cy)
+        elif action == "right_click":
+            action_engine.click(cx, cy, click_type="right")
+            logger.info("GUI-Plus 执行 right_click (%d,%d)", cx, cy)
+        elif action == "mouse_move":
+            action_engine.move_to(cx, cy)
+            logger.info("GUI-Plus 执行 mouse_move (%d,%d)", cx, cy)
+        elif action == "left_click_drag":
+            # 从当前位置拖拽到目标
+            import ctypes as _ctypes, ctypes.wintypes as _wt
+            pt = _wt.POINT()
+            _ctypes.windll.user32.GetCursorPos(_ctypes.byref(pt))
+            action_engine.drag(pt.x, pt.y, cx, cy)
+            logger.info("GUI-Plus 执行 left_click_drag -> (%d,%d)", cx, cy)
+        elif action == "key":
+            keys = args.get("keys", [])
+            if keys:
+                action_engine.key_press("+".join(keys))
+                logger.info("GUI-Plus 执行 key %s", keys)
+        elif action == "type":
+            text = args.get("text", "")
+            if text:
+                action_engine.type_text(text)
+                logger.info("GUI-Plus 执行 type: %s", text[:30])
+        elif action == "scroll":
+            pixels = int(args.get("pixels", 3))
+            import pyautogui as _pag
+            if coord:
+                _pag.moveTo(cx, cy)
+            _pag.scroll(pixels)
+            logger.info("GUI-Plus 执行 scroll %d", pixels)
+        elif action == "wait":
+            wait_sec = float(args.get("time", 2))
+            time.sleep(min(wait_sec, 10))
+            logger.info("GUI-Plus 执行 wait %.1fs", wait_sec)
+        else:
+            logger.warning("GUI-Plus 未知 action：%s", action)
+
+    client = _OpenAI(
+        api_key=api_key,
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        http_client=__import__("httpx").Client(trust_env=False),
+    )
+
+    # 多轮对话历史（保留最近 4 轮）
+    history: list[dict] = []
+    MAX_HISTORY = 4
+    MAX_STEPS = 30
     current_percent = 0
 
+    instruction = "请帮我完成这个软件的安装过程。点击所有必要的按钮（如下一步、同意、安装、完成等），直到安装完成。"
+
+    progress_callback("GUI-Plus 正在分析安装界面…", 5)
+
     try:
-        for i, step in enumerate(INSTALL_STEPS):
+        for step_num in range(1, MAX_STEPS + 1):
             if stop_event.is_set():
-                logger.info("智能安装任务收到停止信号，已中止（步骤 %d/%d）", i, total)
+                logger.info("智能安装任务收到停止信号，已中止（步骤 %d）", step_num)
                 return
 
-            current_percent = int((i + 1) / total * 100)
-            logger.info("开始安装步骤 %d/%d：%s [模式=%s]", i + 1, total, step.step_name, install_mode)
+            # 截图
+            screenshot = screen_capturer.capture_full()
+            b64 = _screenshot_to_b64(screenshot)
+            h_img, w_img = screenshot.shape[:2]
 
-            deadline = time.monotonic() + step.timeout
-            found = False
-            candidates = [step.button_text] + (step.aliases or [])
+            # 构造多轮对话消息
+            history_start = max(0, len(history) - MAX_HISTORY)
+            # 早期历史只保留文字摘要
+            prev_actions = []
+            for idx in range(history_start):
+                out = history[idx].get("output", "")
+                if "Action:" in out and "<tool_call>" in out:
+                    summary = out.split("Action:")[1].split("<tool_call>")[0].strip()
+                    prev_actions.append(f"Step {idx + 1}: {summary}")
 
-            while time.monotonic() < deadline:
-                if stop_event.is_set():
-                    return
+            prev_str = "\n".join(prev_actions) if prev_actions else "None"
+            user_prompt = (
+                f"Please generate the next move according to the UI screenshot, "
+                f"instruction and previous actions.\n\n"
+                f"Instruction: {instruction}\n\n"
+                f"Previous actions:\n{prev_str}"
+            )
 
-                for candidate in candidates:
-                    try:
-                        win_rect = _activate_installer_window(pkg.stem)
+            messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
 
-                        # ── 静默模式：仅 pywinauto ──────────────────────────────
-                        if install_mode == "silent":
-                            result = element_locator.locate_by_text_silent(
-                                candidate, window_title_hint=pkg.stem
-                            )
-                            # 静默模式也推送识别框（可选展示）
-                            if detection_cache is not None:
-                                x, y, w, h = result.bbox
-                                detection_cache.update([BoundingBoxDict(
-                                    bbox=[x, y, x + w, y + h],
-                                    label=f"[静默] {candidate}",
-                                    confidence=result.confidence,
-                                )])
+            # 最近 MAX_HISTORY 轮的完整历史（截图 + 输出）
+            recent = history[-MAX_HISTORY:]
+            for h_idx, h_item in enumerate(recent):
+                if h_idx == 0:
+                    messages.append({
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": user_prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{h_item['b64']}"}},
+                        ],
+                    })
+                else:
+                    messages.append({
+                        "role": "user",
+                        "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{h_item['b64']}"}}],
+                    })
+                messages.append({"role": "assistant", "content": h_item["output"]})
 
-                        # ── 纯视觉模式：Qwen-VL/OCR，不降级 ────────────────────
-                        elif install_mode == "visual":
-                            if win_rect is not None:
-                                wx, wy, ww, wh = win_rect
-                                try:
-                                    screenshot = screen_capturer.capture_region_abs(wx, wy, ww, wh)
-                                    coord_offset = (wx, wy)
-                                except Exception:
-                                    screenshot = screen_capturer.capture_full()
-                                    coord_offset = (0, 0)
-                            else:
-                                screenshot = screen_capturer.capture_full()
-                                coord_offset = (0, 0)
+            # 当前截图
+            if recent:
+                messages.append({
+                    "role": "user",
+                    "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}],
+                })
+            else:
+                messages.append({
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                    ],
+                })
 
-                            result = element_locator.locate_by_text(screenshot, candidate)
-                            if detection_cache is not None:
-                                x, y, w, h = result.bbox
-                                detection_cache.update([BoundingBoxDict(
-                                    bbox=[
-                                        int(x + coord_offset[0]),
-                                        int(y + coord_offset[1]),
-                                        int(x + w + coord_offset[0]),
-                                        int(y + h + coord_offset[1]),
-                                    ],
-                                    label=f"[视觉] {candidate}",
-                                    confidence=result.confidence,
-                                )])
+            logger.info("GUI-Plus 步骤 %d/%d：调用模型…", step_num, MAX_STEPS)
+            progress_callback(f"GUI-Plus 分析界面（步骤 {step_num}）…", min(5 + step_num * 3, 90))
 
-                        # ── 视觉优先+降级模式（默认）────────────────────────────
-                        else:  # visual_with_fallback
-                            if win_rect is not None:
-                                wx, wy, ww, wh = win_rect
-                                try:
-                                    screenshot = screen_capturer.capture_region_abs(wx, wy, ww, wh)
-                                    coord_offset = (wx, wy)
-                                except Exception:
-                                    screenshot = screen_capturer.capture_full()
-                                    coord_offset = (0, 0)
-                            else:
-                                screenshot = screen_capturer.capture_full()
-                                coord_offset = (0, 0)
+            # 调用 GUI-Plus
+            response = client.chat.completions.create(
+                model="gui-plus-2026-02-26",
+                messages=messages,
+                extra_body={"vl_high_resolution_images": True},
+            )
+            output_text: str = response.choices[0].message.content or ""
+            logger.info("GUI-Plus 步骤 %d 输出：%s", step_num, output_text[:200])
 
-                            result = element_locator.locate_by_text_visual_with_fallback(
-                                screenshot, candidate,
-                                window_title_hint=pkg.stem,
-                            )
-                            # 根据 strategy 决定标签前缀，方便 UI 区分来源
-                            strategy_label = (
-                                "[视觉↓控件]" if result.strategy == "pywinauto_fallback"
-                                else "[视觉]"
-                            )
-                            if detection_cache is not None:
-                                x, y, w, h = result.bbox
-                                # pywinauto_fallback 返回的是屏幕绝对逻辑坐标，不需要加 offset
-                                if result.strategy == "pywinauto_fallback":
-                                    detection_cache.update([BoundingBoxDict(
-                                        bbox=[x, y, x + w, y + h],
-                                        label=f"{strategy_label} {candidate}",
-                                        confidence=result.confidence,
-                                    )])
-                                else:
-                                    detection_cache.update([BoundingBoxDict(
-                                        bbox=[
-                                            int(x + coord_offset[0]),
-                                            int(y + coord_offset[1]),
-                                            int(x + w + coord_offset[0]),
-                                            int(y + h + coord_offset[1]),
-                                        ],
-                                        label=f"{strategy_label} {candidate}",
-                                        confidence=result.confidence,
-                                    )])
+            # 提取 action 描述用于日志
+            action_desc = ""
+            if "Action:" in output_text:
+                action_desc = output_text.split("Action:")[1].split("<tool_call>")[0].strip()
+                progress_callback(f"[步骤{step_num}] {action_desc}", min(5 + step_num * 3, 90))
 
-                        # ── 通用：计算点击坐标并执行 ────────────────────────────
-                        x, y, w, h = result.bbox
-                        if result.strategy in ("pywinauto", "pywinauto_fallback"):
-                            # pywinauto 返回屏幕绝对逻辑坐标，直接用
-                            cx = x + w // 2
-                            cy = y + h // 2
-                        else:
-                            # 视觉策略返回窗口内坐标，需加 offset
-                            cx = x + w // 2 + coord_offset[0]
-                            cy = y + h // 2 + coord_offset[1]
+            # 解析 tool_call
+            blocks = _re.findall(r"<tool_call>(.*?)</tool_call>", output_text, _re.DOTALL | _re.IGNORECASE)
+            if not blocks:
+                logger.warning("GUI-Plus 步骤 %d：未找到 tool_call，跳过", step_num)
+                history.append({"b64": b64, "output": output_text})
+                time.sleep(1)
+                continue
 
-                        if not action_engine.click(cx, cy):
-                            raise RuntimeError(f"点击失败：candidate={candidate!r} pos=({cx},{cy})")
+            tool_call = _json.loads(blocks[0].strip())
+            args = tool_call.get("arguments", {})
+            action = args.get("action", "")
 
-                        logger.info(
-                            "点击按钮成功：%s（候选=%r，策略=%s），坐标=(%d,%d)",
-                            step.button_text, candidate, result.strategy, cx, cy,
-                        )
-                        found = True
-                        break
+            # 推送识别框到 detection_cache
+            coord = args.get("coordinate")
+            if detection_cache is not None and coord and len(coord) >= 2:
+                cx_norm = int(float(coord[0]) / 1000.0 * w_img)
+                cy_norm = int(float(coord[1]) / 1000.0 * h_img)
+                _box_size = 60
+                from automation.vision_box_drawer import BoundingBoxDict
+                detection_cache.update([BoundingBoxDict(
+                    bbox=[cx_norm - _box_size // 2, cy_norm - _box_size // 2,
+                          cx_norm + _box_size // 2, cy_norm + _box_size // 2],
+                    label=f"[GUI-Plus] {action_desc[:20]}",
+                    confidence=0.92,
+                )])
 
-                    except Exception as exc:
-                        logger.warning("候选文字 %r 定位失败：%s", candidate, exc)
+            # terminate = 安装完成
+            if action == "terminate":
+                status = args.get("status", "success")
+                if status == "success":
+                    progress_callback("✓ GUI-Plus 安装完成", 100)
+                    logger.info("GUI-Plus 报告安装完成（步骤 %d）", step_num)
+                else:
+                    progress_callback(f"⚠ GUI-Plus 报告失败：{status}", current_percent)
+                    logger.warning("GUI-Plus 报告安装失败：%s", status)
+                return
 
-                if found:
-                    break
+            # 执行操作
+            _execute_action(args, screenshot)
+            current_percent = min(5 + step_num * 3, 90)
 
-                logger.warning("定位或点击按钮失败：%s，所有候选均未找到", step.button_text)
-                time.sleep(0.5)
+            # 保存历史
+            history.append({"b64": b64, "output": output_text})
 
-            if not found:
-                msg = f"超时：未找到'{step.button_text}'按钮"
-                logger.warning(msg)
-                progress_callback(msg, current_percent)
-                if step.optional:
-                    logger.info("步骤 '%s' 为可选步骤，跳过继续", step.button_text)
-                    continue
-                raise TimeoutError(
-                    f"安装按钮'{step.button_text}'在 {step.timeout}s 内未被定位到"
-                )
+            # 操作后等待界面响应
+            time.sleep(1.5)
 
-            progress_callback(step.step_name, current_percent)
+        # 超过最大步骤数
+        progress_callback("⚠ 超过最大步骤数，安装可能未完成", current_percent)
+        logger.warning("GUI-Plus 超过最大步骤数 %d，退出", MAX_STEPS)
+
     except Exception:
-        logger.exception("run_software_installer 发生未预期异常")
+        logger.exception("run_software_installer GUI-Plus 模式发生未预期异常")
         progress_callback("安装异常终止", current_percent)
         raise

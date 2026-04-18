@@ -24,7 +24,7 @@ ENV/
 Thumbs.db
 nul
 
-# Environment secrets
+# Environment secrets — 绝不上传真实 key
 **/.env
 
 # Node modules
@@ -37,9 +37,18 @@ debug_screenshot.png
 # Test temp files
 test_chroma_tmp/
 .hypothesis/
+tests/tmp/
 
 # Recordings
 recordings/
 
 # Kiro IDE config
 .kiro/
+
+# YOLO 模型文件（体积大，通过 LFS 或单独分发）
+*.pt
+models/
+
+# 运行时产物
+runs/
+datasets/

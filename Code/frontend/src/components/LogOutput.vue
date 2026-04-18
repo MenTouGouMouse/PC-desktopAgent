@@ -12,7 +12,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, inject, watch, nextTick } from 'vue'
 
 interface LogEntry {
   html: string
@@ -21,6 +21,9 @@ interface LogEntry {
 
 const logs = ref<LogEntry[]>([])
 const logContainer = ref<HTMLElement | null>(null)
+
+// 从 App.vue 注入日志数组
+const appLogs = inject<ReturnType<typeof ref<string[]>>>('appLogs')!
 
 function scrollToBottom() {
   if (logContainer.value) {
@@ -39,62 +42,44 @@ function wrapSpan(cls: string, text: string): string {
   return `<span class="${cls}">${text}</span>`
 }
 
-/**
- * Render log message as HTML with rich semantic highlights.
- */
 function renderLog(msg: string): string {
-  // 1. Escape HTML
   let s = msg
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
-
-  // 2. Bracket tags like [文件整理] [vision+os] [os_fallback]
   s = s.replace(/(\[[^\]]{1,30}\])/g, (m) => wrapSpan('hl-tag', m))
-
-  // 3. Windows absolute paths: C:\foo\bar or E:\Downloads\file.txt
   s = s.replace(/([A-Za-z]:[/\\][^\s<>"→]+)/g, (m) => wrapSpan('hl-path', m))
-
-  // 4. Arrow → between items
   s = s.replace(/\s*→\s*/g, ` <span class="hl-arrow">→</span> `)
-
-  // 5. File names with extensions
   s = s.replace(
     /\b([\w\-.]+\.(?:pdf|docx?|xlsx?|pptx?|txt|md|zip|rar|7z|exe|msi|jpg|jpeg|png|gif|mp4|mp3|csv|json|yaml|yml|py|ts|js))\b/gi,
     (m) => wrapSpan('hl-filename', m)
   )
-
-  // 6. **bold** markdown
   s = s.replace(/\*\*([^*]+)\*\*/g, (_, inner) => `<strong class="hl-bold">${inner}</strong>`)
-
-  // 7. Numbers with units
   s = s.replace(
     /(\d+(?:\.\d+)?)\s*(%|个|秒|ms|MB|GB|KB)/g,
     (_, num, unit) => `${wrapSpan('hl-num', num)}${unit}`
   )
-
-  // 8. Confidence values: conf=0.72
   s = s.replace(
     /\b(conf=)(\d+\.\d+)/g,
     (_, prefix, val) => `${prefix}${wrapSpan('hl-conf', val)}`
   )
-
-  // 9. Success keywords
   s = s.replace(/(整理完成|任务完成|移动成功|成功|✓|完成)/g, (m) => wrapSpan('hl-success', m))
-
-  // 10. Error/warning keywords
   s = s.replace(/(失败|错误|超时|异常|跳过|⚠️|警告)/g, (m) => wrapSpan('hl-error', m))
-
   return s
 }
 
-onMounted(() => {
-  window.appendLog = (msg: string) => {
-    logs.value.push({ html: renderLog(msg), cls: classifyLog(msg) })
+// 监听 appLogs 新增条目
+watch(
+  () => appLogs.value.length,
+  (newLen, oldLen) => {
+    for (let i = oldLen ?? 0; i < newLen; i++) {
+      const msg = appLogs.value[i]
+      logs.value.push({ html: renderLog(msg), cls: classifyLog(msg) })
+    }
     nextTick(() => scrollToBottom())
   }
-})
+)
 </script>
 
 <style scoped>

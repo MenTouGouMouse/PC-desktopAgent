@@ -57,9 +57,11 @@ class PythonAPI:
         self,
         progress_manager: ProgressManager,
         queue_manager: QueueManager,
+        dashscope_api_key: str = "",
     ) -> None:
         self._progress_manager = progress_manager
         self._queue_manager = queue_manager
+        self._dashscope_api_key: str = dashscope_api_key
         self._main_win: webview.Window | None = None
         self._ball_win: webview.Window | None = None
         self._stop_event: threading.Event = threading.Event()
@@ -247,11 +249,17 @@ class PythonAPI:
 
             def _task() -> None:
                 def _callback(step: str, percent: int) -> None:
+                    # 如果已停止，不再推送进度
+                    if self._stop_event.is_set():
+                        return
                     self._progress_manager.update(percent, step, "smart_installer", is_running=True)
-                    if self._app is not None:
-                        self._app.push_log(f"[智能安装] {step}")
-                    self._push_js_progress(percent, step, is_running=True)
-                    self._push_js_log(f"[智能安装] {step}")
+                    # 在独立线程里异步推送 JS，避免 evaluate_js 阻塞安装主线程
+                    def _push() -> None:
+                        if self._app is not None:
+                            self._app.push_log(f"[智能安装] {step}")
+                        self._push_js_progress(percent, step, is_running=True)
+                        self._push_js_log(f"[智能安装] {step}")
+                    threading.Thread(target=_push, daemon=True).start()
 
                 try:
                     run_software_installer(
@@ -260,17 +268,21 @@ class PythonAPI:
                         detection_cache=self._detection_cache,
                         install_mode=install_mode,  # type: ignore[arg-type]
                     )
+                    if self._stop_event.is_set():
+                        return  # 已由 stop_task 处理状态，不再覆盖
                     self._progress_manager.update(100, "智能安装完成", "smart_installer", is_running=False)
                     self._push_js_progress(100, "智能安装完成", is_running=False)
                     if self._app is not None:
                         self._app.push_log("[智能安装] 任务完成")
                 except Exception as exc:
+                    if self._stop_event.is_set():
+                        return  # 停止导致的异常，忽略
                     logger.exception("start_smart_installer task error")
-                    self._progress_manager.update(
-                        self._progress_manager.get().percent, "任务出错", "smart_installer", is_running=False
-                    )
+                    # 失败时保留当前进度，不清零，显示警告标识
+                    cur = self._progress_manager.get().percent
+                    self._progress_manager.update(cur, "⚠ 任务出错", "smart_installer", is_running=False)
                     self._push_js_log(f"[智能安装] 错误：{exc}")
-                    self._push_js_progress(0, "任务出错", is_running=False)
+                    self._push_js_progress(cur, "⚠ 任务出错", is_running=False)
 
             thread = threading.Thread(target=_task, daemon=True)
             thread.start()
@@ -334,7 +346,7 @@ class PythonAPI:
         """Lazily initialize and return the ChatAgent instance."""
         if self._chat_agent is None:
             push_fn = self._app.push_chat_message if self._app is not None else lambda r, c: None
-            llm_client = LLMClient()
+            llm_client = LLMClient(api_key=self._dashscope_api_key)
             self._chat_agent = ChatAgent(
                 llm_client=llm_client,
                 progress_manager=self._progress_manager,
@@ -586,13 +598,14 @@ class PyWebViewApp:
         progress_manager: ProgressManager,
         queue_manager: QueueManager,
         overlay_drawer: OverlayDrawer,
+        dashscope_api_key: str = "",
     ) -> None:
         self._progress_manager = progress_manager
         self._queue_manager = queue_manager
         self._overlay_drawer = overlay_drawer
         self._main_win: webview.Window | None = None
         self._ball_win: webview.Window | None = None
-        self.api = PythonAPI(progress_manager, queue_manager)
+        self.api = PythonAPI(progress_manager, queue_manager, dashscope_api_key=dashscope_api_key)
         self.api._app = self  # back-reference for push_log
 
     def overlay_drawer_set_show_boxes(
@@ -670,7 +683,6 @@ class PyWebViewApp:
             self._main_win.evaluate_js(f"updateFrame('{b64}')")
         except Exception as exc:  # noqa: BLE001
             logger.debug("push_frame evaluate_js failed: %s", exc)
-
     def push_progress(self, progress: TaskProgress) -> None:
         """Push a progress update to both windows if they are visible."""
         is_running_js = str(progress.is_running).lower()

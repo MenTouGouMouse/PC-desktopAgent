@@ -24,7 +24,6 @@ from __future__ import annotations
 import logging
 import math
 import threading
-import time
 
 import cv2
 import numpy as np
