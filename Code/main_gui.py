@@ -139,15 +139,10 @@ def main() -> None:
     logger.info("Execution worker started, pid=%d", worker.pid)
 
     # 4. Create PyWebViewApp and wire subscriptions
-    app = PyWebViewApp(progress_manager, queue_manager, overlay_drawer)
-
-    # Subscribe progress updates → push to both windows
-    progress_manager.subscribe(app.push_progress)
-
-    # Start overlay drawer → push frames to main window
-    overlay_drawer.start(app.push_frame)
+    app = PyWebViewApp(progress_manager, queue_manager, overlay_drawer, dashscope_api_key=config.dashscope_api_key)
 
     # 5. Run the PyWebView event loop (blocks until window is closed)
+    # Note: app.run() internally subscribes push_progress and starts overlay_drawer
     logger.info("Starting PyWebView application…")
     app.run()
 

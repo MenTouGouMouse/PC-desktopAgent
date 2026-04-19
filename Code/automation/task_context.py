@@ -16,7 +16,7 @@ import fnmatch
 import logging
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 from automation.vision_box_drawer import BoundingBoxDict

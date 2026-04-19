@@ -87,7 +87,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKeyDown))
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: 9999;
+  padding-top: 48px; /* 避免被窗口标题栏/顶部 bar 遮挡 */
+  box-sizing: border-box;
 }
 
 .dialog {

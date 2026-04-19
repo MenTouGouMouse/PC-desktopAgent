@@ -383,7 +383,7 @@ def run_file_organizer(
             ext = file.suffix.lower()
             cat = FILE_CATEGORY_MAP.get(ext, ("Others", "Other"))
             parent_dir, sub_dir = cat
-            dest_dir = target / parent_dir / sub_dir
+            dest_dir = target / "Agent-Organized" / parent_dir / sub_dir
             dest_dir.mkdir(parents=True, exist_ok=True)
 
             try:
@@ -550,7 +550,7 @@ def run_file_organizer(
                     files_handled += 1
                     continue
                 vl_parent, vl_sub = vl_cat
-                vl_dest_dir = target / vl_parent / vl_sub
+                vl_dest_dir = target / "Agent-Organized" / vl_parent / vl_sub
                 vl_dest_dir.mkdir(parents=True, exist_ok=True)
                 try:
                     vl_dest_name = file.name
@@ -594,7 +594,7 @@ def run_file_organizer(
         ext = file.suffix.lower()
         cat = FILE_CATEGORY_MAP.get(ext, ("Others", "Other"))
         category_parent, category_sub = cat
-        dest_dir_path = target / category_parent / category_sub
+        dest_dir_path = target / "Agent-Organized" / category_parent / category_sub
         dest_dir_path.mkdir(parents=True, exist_ok=True)
 
         # 尝试在 Explorer 窗口中定位文件坐标（可选，失败不影响移动）
@@ -720,7 +720,7 @@ def run_file_organizer(
                 ext = file.suffix.lower()
                 lc_cat = FILE_CATEGORY_MAP.get(ext, ("Others", "Other"))
                 lc_parent, lc_sub = lc_cat
-                dest_dir_path = target / lc_parent / lc_sub
+                dest_dir_path = target / "Agent-Organized" / lc_parent / lc_sub
                 dest_dir_path.mkdir(parents=True, exist_ok=True)
                 try:
                     dest_name = file.name
@@ -766,7 +766,7 @@ def run_file_organizer(
                 ext = file.suffix.lower()
                 fb_cat = FILE_CATEGORY_MAP.get(ext, ("Others", "Other"))
                 fb_parent, fb_sub = fb_cat
-                dest_dir_path = target / fb_parent / fb_sub
+                dest_dir_path = target / "Agent-Organized" / fb_parent / fb_sub
                 dest_dir_path.mkdir(parents=True, exist_ok=True)
                 try:
                     dest_name = file.name

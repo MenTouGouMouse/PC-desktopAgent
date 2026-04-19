@@ -8,7 +8,7 @@
     </div>
 
     <div class="progress-section">
-      <ProgressBar :percent="percent" :is-running="isRunning" />
+      <ProgressBar :percent="percent" :is-running="isRunning" :status-text="statusText" />
     </div>
 
     <div class="log-section">
@@ -37,6 +37,7 @@ import InstallModeDialog from './InstallModeDialog.vue'
 defineProps<{
   percent: number
   isRunning: boolean
+  statusText?: string
 }>()
 
 const api = usePyWebView()

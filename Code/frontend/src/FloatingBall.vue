@@ -75,6 +75,14 @@ onUnmounted(() => {
   justify-content: center;
   user-select: none;
   overflow: hidden;
+  transition: box-shadow 0.22s ease;
+}
+
+.floating-ball:hover {
+  box-shadow:
+    inset 0 0 0 2px var(--accent, #4a5bc4),
+    inset 0 0 16px rgba(74, 91, 196, 0.30);
+  transition: box-shadow 0.22s ease;
 }
 
 .pulse-dot {

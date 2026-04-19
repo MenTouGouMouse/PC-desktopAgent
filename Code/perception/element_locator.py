@@ -58,11 +58,13 @@ class ElementLocator:
     """GUI 元素定位器，按优先级降级链识别屏幕元素。
 
     降级链顺序（优先级从高到低）：
-    1. 阿里云视觉智能平台 DetectImageElements
-    2. 通义千问 Qwen-VL 多模态理解
-    3. Tesseract OCR
-    4. OpenCV 模板匹配
-    5. 经验坐标偏移（兜底）
+    0. 本地 YOLOv8 GUI 检测模型（最快，离线，需 models/gui_detector.pt）
+    1. pywinauto 控件 API（仅适用于标准 Win32 安装窗口）
+    2. 阿里云视觉智能平台 DetectImageElements
+    3. 通义千问 Qwen-VL 多模态理解
+    4. Tesseract OCR
+    5. OpenCV 模板匹配
+    6. 经验坐标偏移（兜底）
     """
 
     def __init__(self) -> None:
@@ -71,6 +73,116 @@ class ElementLocator:
         # 复用 DPIAdapter 实例，避免每次定位都重新枚举显示器
         from perception.dpi_adapter import DPIAdapter as _DPIAdapter
         self._dpi = _DPIAdapter()
+        # 本地 YOLO 模型（第 0 级，最快，离线）
+        self._yolo_model = self._load_yolo_model()
+
+    @staticmethod
+    def _load_yolo_model():
+        """YOLO 暂时禁用，直接返回 None，由 GUI-Plus 接管顶层识别。"""
+        logger.info("YOLO 已禁用，跳过加载")
+        return None
+
+    # ------------------------------------------------------------------
+    # 策略 -1：本地 YOLOv8（最快，离线，第 0 优先级）
+    # ------------------------------------------------------------------
+
+    # 标签名 → 目标描述关键词映射（用于语义匹配）
+    _YOLO_LABEL_KEYWORDS: dict[str, list[str]] = {
+        "agree_btn":   ["同意", "agree", "接受", "accept", "许可"],
+        "next_btn":    ["下一步", "next", "继续", "continue"],
+        "install_btn": ["安装", "install", "立即安装", "开始安装"],
+        "finish_btn":  ["完成", "finish", "关闭", "close", "done"],
+        "ok_btn":      ["确定", "ok", "好", "确认", "confirm"],
+        "cancel_btn":  ["取消", "cancel", "退出"],
+    }
+
+    def _locate_by_yolo(
+        self,
+        screenshot: np.ndarray,
+        element_description: str,
+        conf_threshold: float = 0.55,
+    ) -> ElementResult | None:
+        """使用本地 YOLOv8 模型定位 GUI 按钮（第 0 级，最快）。
+
+        将 element_description 与标签关键词做语义匹配，
+        返回置信度最高的匹配框。
+
+        Args:
+            screenshot: BGR numpy 数组截图。
+            element_description: 目标描述，如"下一步"、"安装"。
+            conf_threshold: 最低置信度阈值，默认 0.55。
+
+        Returns:
+            匹配成功时返回 ElementResult（逻辑坐标）；否则返回 None。
+        """
+        if self._yolo_model is None:
+            return None
+        try:
+            import torch  # noqa: F401 — ensure torch is available
+            results = self._yolo_model(screenshot, verbose=False)
+            if not results or results[0].boxes is None:
+                return None
+
+            boxes = results[0].boxes
+            names = results[0].names  # {0: 'agree_btn', ...}
+
+            # 找出与 element_description 语义匹配的标签
+            desc_lower = element_description.lower()
+            matched_labels: set[str] = set()
+            for label, keywords in self._YOLO_LABEL_KEYWORDS.items():
+                if any(kw in desc_lower for kw in keywords):
+                    matched_labels.add(label)
+            # 如果没有匹配到任何标签，尝试直接用描述词匹配标签名
+            if not matched_labels:
+                for label in self._YOLO_LABEL_KEYWORDS:
+                    if label.replace("_btn", "") in desc_lower:
+                        matched_labels.add(label)
+
+            best_conf = 0.0
+            best_box = None
+            best_label = ""
+
+            for i in range(len(boxes)):
+                cls_id = int(boxes.cls[i].item())
+                conf = float(boxes.conf[i].item())
+                label = names.get(cls_id, "")
+
+                if conf < conf_threshold:
+                    continue
+                # 如果有语义匹配，只取匹配的标签；否则取置信度最高的任意框
+                if matched_labels and label not in matched_labels:
+                    continue
+                if conf > best_conf:
+                    best_conf = conf
+                    best_box = boxes.xyxy[i].tolist()  # [x1, y1, x2, y2] 物理像素
+                    best_label = label
+
+            if best_box is None:
+                logger.debug("YOLO 未找到匹配元素：%s（matched_labels=%s）", element_description, matched_labels)
+                return None
+
+            x1, y1, x2, y2 = best_box
+            # YOLO 在 mss 截图（逻辑像素）上推理，输出坐标已是逻辑坐标，直接使用。
+            lx1 = int(x1)
+            ly1 = int(y1)
+            lx2 = int(x2)
+            ly2 = int(y2)
+            cx = (lx1 + lx2) // 2
+            cy = (ly1 + ly2) // 2
+
+            logger.info(
+                "YOLO 定位成功：element=%s label=%s conf=%.3f center=(%d,%d)",
+                element_description, best_label, best_conf, cx, cy,
+            )
+            return ElementResult(
+                name=element_description,
+                bbox=(lx1, ly1, lx2 - lx1, ly2 - ly1),
+                confidence=best_conf,
+                strategy="yolo_local",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("YOLO 定位异常：%s，降级到下一策略", exc)
+            return None
 
     # ------------------------------------------------------------------
     # 策略 0：pywinauto 控件 API（仅用于标准 Win32 安装窗口）
@@ -260,6 +372,234 @@ class ElementLocator:
             }
 
         return {"found": True, "coords": None}
+
+    # ------------------------------------------------------------------
+    # 策略 1.5：阿里云 GUI-Plus（顶层视觉，YOLO 禁用期间作为首选）
+    # ------------------------------------------------------------------
+
+    def _locate_by_gui_plus(
+        self,
+        screenshot: np.ndarray,
+        element_description: str,
+    ) -> ElementResult | None:
+        """使用阿里云 GUI-Plus 模型定位 GUI 元素。
+
+        GUI-Plus 返回基于 1000×1000 归一化坐标系的坐标，
+        通过 smart_resize 映射到模型实际处理的图像尺寸，再还原到原始截图坐标。
+
+        屏幕环境：2560×1600 物理分辨率，150% 缩放，DPI scale_factor=1.0（Per-Monitor DPI Aware v2）。
+        mss 截图为物理像素（2560×1600），坐标系与 SetCursorPos 一致，无需额外转换。
+
+        Args:
+            screenshot: BGR numpy 数组截图（物理像素，2560×1600）。
+            element_description: 目标元素描述，如"下一步"、"安装"。
+
+        Returns:
+            识别成功时返回 ElementResult（逻辑坐标）；失败时返回 None。
+        """
+        import json
+        import math
+        import re
+
+        api_key: str = os.environ.get("DASHSCOPE_API_KEY", "")
+        if not api_key:
+            # 尝试从 config/.env 加载（与 _call_qwen_vl_api 保持一致）
+            from pathlib import Path as _Path
+            from dotenv import load_dotenv as _load_dotenv
+            _load_dotenv(dotenv_path=_Path(__file__).parent.parent / "config" / ".env", override=False)
+            api_key = os.environ.get("DASHSCOPE_API_KEY", "")
+        if not api_key:
+            logger.warning("GUI-Plus 策略：DASHSCOPE_API_KEY 未配置，跳过")
+            return None
+
+        try:
+            from openai import OpenAI
+
+            h_img, w_img = screenshot.shape[:2]
+
+            # 编码截图为 base64
+            success, buf = cv2.imencode(".png", screenshot)
+            if not success:
+                logger.warning("GUI-Plus 策略：图像编码失败，element=%s", element_description)
+                return None
+            b64_image = base64.b64encode(buf.tobytes()).decode("utf-8")
+
+            # GUI-Plus 官方推荐 system prompt（电脑端）
+            system_prompt = (
+                "# Tools\n\nYou may call one or more functions to assist with the user query.\n\n"
+                "You are provided with function signatures within <tools></tools> XML tags:\n"
+                "<tools>\n"
+                '{"type": "function", "function": {"name": "computer_use", "description": '
+                '"Use a mouse and keyboard to interact with a computer, and take screenshots.\\n'
+                "* This is an interface to a desktop GUI. You do not have access to a terminal or applications menu.\\n"
+                "* Some applications may take time to start or process actions, so you may need to wait and take successive screenshots.\\n"
+                "* The screen's resolution is 1000x1000.\\n"
+                '* Make sure to click any buttons, links, icons, etc with the cursor tip in the center of the element. Don\'t click boxes on their edges unless asked.", '
+                '"parameters": {"properties": {'
+                '"action": {"description": "The action to perform. The available actions are:\\n'
+                "* `key`: Performs key down presses on the arguments passed in order, then performs key releases in reverse order.\\n"
+                "* `type`: Type a string of text on the keyboard.\\n"
+                "* `mouse_move`: Move the cursor to a specified (x, y) pixel coordinate on the screen.\\n"
+                "* `left_click`: Click the left mouse button at a specified (x, y) pixel coordinate on the screen.\\n"
+                "* `left_click_drag`: Click and drag the cursor to a specified (x, y) pixel coordinate on the screen.\\n"
+                "* `right_click`: Click the right mouse button at a specified (x, y) pixel coordinate on the screen.\\n"
+                "* `double_click`: Double-click the left mouse button at a specified (x, y) pixel coordinate on the screen.\\n"
+                "* `scroll`: Performs a scroll of the mouse scroll wheel.\\n"
+                '* `terminate`: Terminate the current task and report its completion status.", '
+                '"enum": ["key", "type", "mouse_move", "left_click", "left_click_drag", "right_click", "double_click", "scroll", "terminate"], '
+                '"type": "string"}, '
+                '"coordinate": {"description": "(x, y): The x (pixels from the left edge) and y (pixels from the top edge) coordinates. Required only by `action=mouse_move` and `action=left_click_drag`.", "type": "array"}, '
+                '"keys": {"description": "Required only by `action=key`.", "type": "array"}, '
+                '"text": {"description": "Required only by `action=type`.", "type": "string"}, '
+                '"pixels": {"description": "The amount of scrolling to perform. Required only by `action=scroll`.", "type": "number"}, '
+                '"status": {"description": "The status of the task. Required only by `action=terminate`.", "type": "string", "enum": ["success", "failure"]}}, '
+                '"required": ["action"], "type": "object"}}}\n'
+                "</tools>\n\n"
+                "For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n"
+                "<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>\n\n"
+                "# Response format\n\n"
+                "Response format for every step:\n"
+                "1) Action: a short imperative describing what to do in the UI.\n"
+                "2) A single <tool_call>...</tool_call> block containing only the JSON.\n\n"
+                "Rules:\n"
+                "- Output exactly in the order: Action, <tool_call>.\n"
+                "- Be brief: one line for Action.\n"
+                "- Do not output anything else outside those two parts.\n"
+                "- If finishing, use action=terminate in the tool call."
+            )
+
+            client = OpenAI(
+                api_key=api_key,
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                http_client=__import__("httpx").Client(trust_env=False),
+            )
+
+            response = client.chat.completions.create(
+                model="gui-plus-2026-02-26",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{b64_image}"},
+                            },
+                            {
+                                "type": "text",
+                                "text": (
+                                    f'请在截图中找到文字为"{element_description}"的可点击按钮，'
+                                    f'并返回其中心坐标（left_click action）。'
+                                    f'如果找不到该按钮，使用 terminate action。'
+                                ),
+                            },
+                        ],
+                    },
+                ],
+                extra_body={"vl_high_resolution_images": True},
+            )
+
+            output_text: str = response.choices[0].message.content or ""
+            logger.debug("GUI-Plus 原始输出：%s", output_text[:300])
+
+            # 提取 <tool_call> 块
+            pattern = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL | re.IGNORECASE)
+            blocks = pattern.findall(output_text)
+            if not blocks:
+                logger.warning("GUI-Plus 策略：未找到 tool_call 块，element=%s output=%s",
+                               element_description, output_text[:100])
+                return None
+
+            tool_call = json.loads(blocks[0].strip())
+            args = tool_call.get("arguments", {})
+            action = args.get("action", "")
+
+            if action == "terminate":
+                logger.info("GUI-Plus 策略：模型返回 terminate，元素未找到，element=%s", element_description)
+                return None
+
+            # left_click / mouse_move / left_click_drag 都带 coordinate
+            coord = args.get("coordinate")
+            if not coord or len(coord) < 2:
+                logger.warning("GUI-Plus 策略：action=%s 无坐标，element=%s args=%s",
+                               action, element_description, args)
+                return None
+
+            norm_x, norm_y = float(coord[0]), float(coord[1])
+
+            # GUI-Plus 坐标基于 1000×1000 归一化坐标系。
+            # 模型内部会对图像做 smart_resize，坐标是相对于 resize 后图像的归一化值。
+            # 需要：1) 算出 resize 后尺寸  2) 归一化坐标 × resize 尺寸 = resize 后像素坐标
+            #        3) resize 后像素坐标 / resize 后尺寸 × 原始尺寸 = 原始图像像素坐标
+            # 步骤 2 和 3 合并后等价于：原始坐标 = 归一化坐标 / 1000 × 原始尺寸
+            # （因为归一化是相对于 resize 后尺寸，而 resize 后尺寸与原始尺寸等比例）
+            # 对于 2560×1600 的截图，smart_resize 会缩小到约 1280×800（max_pixels 限制），
+            # 但归一化后再还原，最终坐标仍对应原始图像的比例位置。
+            def _smart_resize(height: int, width: int) -> tuple[int, int]:
+                """按官方文档参数计算模型内部 resize 后的尺寸。"""
+                factor = 32
+                min_pixels = 3136        # 32*32*4 (官方文档 min_pixels)
+                max_pixels = 1_003_520   # 官方文档 max_pixels（约 1M 像素）
+
+                def _round(n: int) -> int:
+                    return round(n / factor) * factor
+
+                def _floor(n: float) -> int:
+                    return math.floor(n / factor) * factor
+
+                def _ceil(n: float) -> int:
+                    return math.ceil(n / factor) * factor
+
+                h_bar = _round(height)
+                w_bar = _round(width)
+
+                if h_bar * w_bar > max_pixels:
+                    beta = math.sqrt((height * width) / max_pixels)
+                    h_bar = _floor(height / beta)
+                    w_bar = _floor(width / beta)
+                elif h_bar * w_bar < min_pixels:
+                    beta = math.sqrt(min_pixels / (height * width))
+                    h_bar = _ceil(height * beta)
+                    w_bar = _ceil(width * beta)
+
+                return h_bar, w_bar
+
+            resized_h, resized_w = _smart_resize(h_img, w_img)
+
+            # 归一化坐标（0-1000）→ resize 后像素坐标 → 原始图像像素坐标
+            px = int(norm_x / 1000.0 * resized_w / resized_w * w_img)
+            py = int(norm_y / 1000.0 * resized_h / resized_h * h_img)
+            # 化简：px = int(norm_x / 1000.0 * w_img)，py = int(norm_y / 1000.0 * h_img)
+            px = int(norm_x / 1000.0 * w_img)
+            py = int(norm_y / 1000.0 * h_img)
+
+            # 在 Per-Monitor DPI Aware v2 模式下，scale_factor=1.0，to_logical 是 identity
+            lx, ly = self._dpi.to_logical(px, py)
+
+            _DEFAULT_SIZE = 60  # 按钮通常比 40px 大，用 60px 更合理
+            bbox: tuple[int, int, int, int] = (
+                lx - _DEFAULT_SIZE // 2,
+                ly - _DEFAULT_SIZE // 2,
+                _DEFAULT_SIZE,
+                _DEFAULT_SIZE,
+            )
+
+            logger.info(
+                "GUI-Plus 定位成功：element=%s action=%s norm=(%.1f,%.1f) "
+                "img=%dx%d resized=%dx%d -> px=(%d,%d) -> logical=(%d,%d)",
+                element_description, action, norm_x, norm_y,
+                w_img, h_img, resized_w, resized_h, px, py, lx, ly,
+            )
+            return ElementResult(
+                name=element_description,
+                bbox=bbox,
+                confidence=0.92,
+                strategy="gui_plus",
+            )
+
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("GUI-Plus 策略：调用异常，触发降级。element=%s error=%s", element_description, exc)
+            return None
 
     # ------------------------------------------------------------------
     # 策略 2：通义千问 Qwen-VL 多模态理解
@@ -484,6 +824,7 @@ class ElementLocator:
         client = OpenAI(
             api_key=api_key,
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            http_client=__import__("httpx").Client(trust_env=False),
         )
 
         response = client.chat.completions.create(
@@ -795,7 +1136,13 @@ class ElementLocator:
         """
         tried: list[str] = []
 
-        # 阶段1：纯视觉
+        # 阶段0：GUI-Plus（YOLO 禁用期间作为顶层，离线 YOLO 恢复后可调整顺序）
+        tried.append("gui_plus")
+        result = self._locate_by_gui_plus(screenshot, element_description)
+        if result is not None:
+            return result
+
+        # 阶段1：纯视觉（阿里云 → Qwen-VL → OCR）
         tried.append("aliyun_vision")
         result = self._locate_by_aliyun_vision(screenshot, element_description)
         if result is not None:
@@ -863,6 +1210,12 @@ class ElementLocator:
             ElementNotFoundError: 所有策略均失败且无经验坐标时抛出。
         """
         tried: list[str] = []
+
+        # 策略 0：本地 YOLO（最快，离线）
+        tried.append("yolo_local")
+        result = self._locate_by_yolo(screenshot, element_description)
+        if result is not None:
+            return result
 
         # 策略 1：阿里云视觉
         tried.append("aliyun_vision")

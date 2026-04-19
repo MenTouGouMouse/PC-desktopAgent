@@ -5,7 +5,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -74,28 +74,11 @@ def _enumerate_monitors() -> list[MonitorInfo]:
         for idx, (h_monitor, left, top) in enumerate(raw_monitors):
             scale_factor = 1.0
             try:
-                # GetScaleFactorForMonitor returns a DEVICE_SCALE_FACTOR enum value
-                # e.g. 100 = 100%, 125 = 125%, 150 = 150%
-                device_scale = ctypes.c_uint(0)
-                hr = shcore.GetScaleFactorForMonitor(h_monitor, ctypes.byref(device_scale))
-                if hr == 0:  # S_OK
-                    raw_value = device_scale.value
-                    if raw_value > 0:
-                        scale_factor = raw_value / 100.0
-                    else:
-                        logger.warning(
-                            "GetScaleFactorForMonitor returned invalid value %d for monitor %d; "
-                            "using scale_factor=1.0",
-                            raw_value,
-                            idx,
-                        )
-                else:
-                    logger.warning(
-                        "GetScaleFactorForMonitor failed with HRESULT 0x%08X for monitor %d; "
-                        "using scale_factor=1.0",
-                        hr,
-                        idx,
-                    )
+                # Per-Monitor DPI Aware v2 模式下，mss 截图、SetCursorPos、SendInput
+                # 均使用物理像素坐标，无需缩放转换，scale_factor 固定为 1.0。
+                # GetDpiForMonitor 返回的是 UI 渲染缩放比（用于字体/控件大小），
+                # 不代表坐标系差异，因此不用于坐标转换。
+                pass
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Failed to read DPI for monitor %d: %s; using scale_factor=1.0",

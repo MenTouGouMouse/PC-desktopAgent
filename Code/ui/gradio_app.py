@@ -30,7 +30,7 @@ from config.config_loader import VisionBoxConfig, load_vision_box_config
 from perception.dpi_adapter import DPIAdapter
 from perception.element_locator import ElementResult
 from perception.screen_capturer import ScreenCapturer
-from ui.queue_manager import CommandMessage, QueueManager, StatusMessage
+from ui.queue_manager import QueueManager, StatusMessage
 
 logger = logging.getLogger(__name__)
 
